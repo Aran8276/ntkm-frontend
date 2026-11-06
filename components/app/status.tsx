@@ -30,6 +30,8 @@ const chipVariants = cva(
         success: "bg-success/10 text-success",
         warning: "bg-warning/15 text-[color-mix(in_oklch,var(--warning),var(--foreground)_35%)]",
         danger: "bg-destructive/10 text-destructive",
+        // Admin-only tone (superadmin level, "Dibuat oleh admin").
+        violet: "bg-violet/10 text-violet",
       },
     },
     defaultVariants: { tone: "neutral" },

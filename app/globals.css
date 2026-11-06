@@ -29,6 +29,7 @@
   --color-destructive: var(--destructive);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-violet: var(--violet); /* admin: superadmin chip, "Dibuat oleh admin" */
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -68,6 +69,7 @@
   --destructive: oklch(0.577 0.245 27.325);
   --success: oklch(0.6 0.13 163);
   --warning: oklch(0.7 0.14 70);
+  --violet: oklch(0.52 0.17 293);
   --border: oklch(0.925 0.005 214.3);
   --input: oklch(0.925 0.005 214.3);
   --ring: oklch(0.723 0.014 214.4);
@@ -105,6 +107,7 @@
   --destructive: oklch(0.704 0.191 22.216);
   --success: oklch(0.72 0.13 163);
   --warning: oklch(0.8 0.13 80);
+  --violet: oklch(0.74 0.13 293);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.56 0.021 213.5);
