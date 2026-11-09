@@ -16,8 +16,9 @@ import {
   formatTimeRange,
   upcomingDayLabel,
 } from "@/lib/format"
-import { actionsFor, getApplication, getTimeline, viewerRoleFor } from "@/lib/mock-data"
-import type { Application, ApplicationItem, ApplicationStatus, Role } from "@/lib/types"
+import { api, isApiError } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { Application, ApplicationItem, ApplicationStatus, Role, TimelineEvent } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -30,7 +31,9 @@ import {
 } from "@/components/ui/sheet"
 import { toast } from "@/components/ui/toast"
 import { AppShell } from "@/components/app/app-shell"
-import { ConfirmDialog, InfoRow, Section, Thumb } from "@/components/app/blocks"
+import { ConfirmDialog, InfoRow, PageSkeletonBody, Section, Thumb } from "@/components/app/blocks"
+import { LoadError, handleApiError, showConflict } from "@/components/app/feedback"
+import { useRole } from "@/components/app/providers"
 import { StockControl } from "@/components/app/cards"
 import { FormField } from "@/components/app/form-field"
 import { NumberStepper } from "@/components/app/inputs"
@@ -85,55 +88,97 @@ const DOT: Record<ApplicationStatus, string> = {
 
 type ActionSheet = null | "ship" | "receive" | "cancel" | "complete"
 
-export function ApplicationDetail({ id }: { id: number }) {
-  const initial = getApplication(id)!
-  const viewer = viewerRoleFor(initial)
-  const [app, setApp] = React.useState<Application>(initial)
-  const [sheet, setSheet] = React.useState<ActionSheet>(null)
+const ACTOR_LABEL: Record<string, string> = { store: "Toko", umkm: "UMKM", admin: "Admin" }
 
-  const timeline = React.useMemo(() => getTimeline(app), [app])
+/**
+ * P19 · Detail kerja sama. Content and buttons follow the server's
+ * `viewer_role`, `status` and `available_actions`; the frontend never
+ * computes allowed actions itself.
+ */
+export function ApplicationDetail({ id }: { id: string }) {
+  const { role } = useRole()
+  const q = useApi<Application>("user", `/applications/${id}`, { as: role })
+  const tq = useApi<TimelineEvent[]>("user", `/applications/${id}/timeline`, { as: role })
+  if (!q.data)
+    return (
+      <AppShell title="Kerja sama" width="wide">
+        {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref="/" backLabel="Kembali ke dashboard" /> : <PageSkeletonBody />}
+      </AppShell>
+    )
+  return (
+    <DetailView
+      app={q.data}
+      timeline={tq.data ?? []}
+      onChange={(next) => {
+        if (next) q.mutate(next)
+        void q.reload()
+        void tq.reload()
+        void revalidate("user", "/applications", "/stock", "/notifications", "/me/opportunities", "/opportunities")
+      }}
+    />
+  )
+}
+
+function DetailView({
+  app,
+  timeline,
+  onChange,
+}: {
+  app: Application
+  timeline: TimelineEvent[]
+  /** New application from an action response (or null to just refetch). */
+  onChange: (next: Application | null) => void
+}) {
+  const viewer: Role = app.viewer_role
+  const [sheet, setSheet] = React.useState<ActionSheet>(null)
+  const [pending, setPending] = React.useState(false)
+  const [completeNote, setCompleteNote] = React.useState("")
+
   const actions = app.available_actions
   const reviewing = viewer === "store" && actions.includes("review")
   const canUpdateStock = viewer === "store" && actions.includes("update_stock")
   const cancelReason = app.status === "cancelled" ? timeline.at(-1)?.note : null
 
-  const transition = (status: ApplicationStatus, patch: Partial<Application> = {}, message?: string) => {
-    setApp((prev) => ({
-      ...prev,
-      ...patch,
-      status,
-      updated_at: "2026-11-04T16:00:00+07:00",
-      available_actions: actionsFor(status, viewer),
-    }))
-    if (message) toast.add({ title: message, type: "success" })
-    setSheet(null)
+  /** POST /applications/{id}/<action>?as=<viewer> → replace page data, refetch timeline + badge. */
+  const run = async (action: "review" | "ship" | "receive" | "complete" | "cancel", body: unknown, message: string) => {
+    setPending(true)
+    try {
+      const next = await api.post<Application>(`/applications/${app.id}/${action}?as=${viewer}`, body)
+      toast.add({ title: message, type: "success" })
+      setSheet(null)
+      onChange(next)
+    } catch (e) {
+      if (isApiError(e) && e.code === "conflict" && e.details.reason === "quota_full")
+        showConflict({
+          title: "Kuota peluang sudah penuh",
+          message: "Kuota peluang sudah penuh. Tambah kuota di peluang atau tolak pengajuan ini.",
+          extra: (
+            <Link href={`/toko/peluang/${app.opportunity.id}/ubah`} className="text-sm text-primary underline">
+              Ubah peluang
+            </Link>
+          ),
+        })
+      else handleApiError(e, { onReload: () => onChange(null) })
+    } finally {
+      setPending(false)
+    }
   }
 
-  const onReview = (r: ReviewResult) => {
-    const anyApproved = r.items.some((i) => i.decision === "approved")
-    transition(
-      anyApproved ? "approved" : "rejected",
+  const onReview = (r: ReviewResult) =>
+    void run(
+      "review",
       {
-        items: app.items.map((it) => {
-          const d = r.items.find((x) => x.id === it.id)!
-          return d.decision === "approved"
-            ? {
-                ...it,
-                decision: "approved",
-                approved_quantity: d.approved_quantity,
-                sell_price: d.sell_price,
-                commission_per_unit: d.commission,
-                umkm_income_per_unit: d.income,
-              }
-            : { ...it, decision: "rejected", reject_reason: d.reject_reason }
-        }),
+        items: r.items.map((i) =>
+          i.decision === "approved"
+            ? { item_id: i.id, decision: "approved", approved_quantity: i.approved_quantity, sell_price: i.sell_price }
+            : { item_id: i.id, decision: "rejected", reject_reason: i.reject_reason }
+        ),
         delivery_slot: r.delivery_slot,
-        review_note: r.note,
         stock_mode: r.stock_mode,
+        note: r.note,
       },
       "Keputusan terkirim. UMKM akan dikabari."
     )
-  }
 
   const oppHref = viewer === "store" ? `/toko/peluang/${app.opportunity.id}` : `/umkm/peluang/${app.opportunity.id}`
   const backHref = viewer === "store" ? "/toko/pengajuan" : "/umkm/pengajuan"
@@ -150,22 +195,22 @@ export function ApplicationDetail({ id }: { id: number }) {
         reviewing ? undefined : bottomActions.length ? (
           <div className="flex flex-wrap items-center gap-3 sm:justify-end">
             {bottomActions.includes("cancel") && (
-              <Button variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setSheet("cancel")}>
+              <Button variant="ghost" className="text-destructive hover:text-destructive" disabled={pending} onClick={() => setSheet("cancel")}>
                 Batalkan
               </Button>
             )}
             {bottomActions.includes("complete") && (
-              <Button variant="outline" className="flex-1 sm:flex-none" onClick={() => setSheet("complete")}>
+              <Button variant="outline" className="flex-1 sm:flex-none" disabled={pending} onClick={() => setSheet("complete")}>
                 Selesaikan kerja sama
               </Button>
             )}
             {bottomActions.includes("ship") && (
-              <Button className="flex-1 sm:flex-none" onClick={() => setSheet("ship")}>
+              <Button className="flex-1 sm:flex-none" disabled={pending} onClick={() => setSheet("ship")}>
                 Tandai dikirim
               </Button>
             )}
             {bottomActions.includes("receive") && (
-              <Button className="flex-1 sm:flex-none" onClick={() => setSheet("receive")}>
+              <Button className="flex-1 sm:flex-none" disabled={pending} onClick={() => setSheet("receive")}>
                 Konfirmasi barang diterima
               </Button>
             )}
@@ -211,7 +256,7 @@ export function ApplicationDetail({ id }: { id: number }) {
           <Section size="sm">
             {viewer === "store" ? (
               <div className="flex items-start gap-4">
-                <Thumb kind="umkm" />
+                <Thumb kind="umkm" src={app.umkm.logo_url} />
                 <div className="flex min-w-0 flex-1 flex-col gap-2">
                   <div>
                     <p className="font-medium">{app.umkm.business_name}</p>
@@ -222,7 +267,7 @@ export function ApplicationDetail({ id }: { id: number }) {
               </div>
             ) : (
               <div className="flex items-center gap-4">
-                <Thumb kind="store" />
+                <Thumb kind="store" src={app.store.photo_url} />
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <p className="font-medium">{app.store.name}</p>
                   <p className="text-sm text-muted-foreground">{app.store.address}</p>
@@ -233,17 +278,19 @@ export function ApplicationDetail({ id }: { id: number }) {
 
           {/* Section 5 / 6 · Items or approval form */}
           {reviewing ? (
-            <ReviewForm application={app} onSubmit={onReview} />
+            <ReviewForm application={app} onSubmit={onReview} pending={pending} />
           ) : (
             <Section title="Produk dalam pengajuan" contentClassName="flex flex-col gap-3">
               {app.items.map((it) => (
                 <ItemCard
                   key={it.id}
+                  applicationId={app.id}
                   item={it}
                   status={app.status}
                   stockMode={app.stock_mode}
                   editableStock={canUpdateStock}
                   umkmName={app.umkm.business_name}
+                  onStockChanged={() => onChange(null)}
                 />
               ))}
               {app.note && (
@@ -314,7 +361,8 @@ export function ApplicationDetail({ id }: { id: number }) {
                     <div className={cn("flex flex-1 flex-col gap-0.5", latest && "-m-2 bg-muted/60 p-2")}>
                       <p className={cn("text-sm", latest && "font-semibold")}>{e.label}</p>
                       <p className="text-xs text-muted-foreground">
-                        oleh {e.actor.name} ({e.actor.role === "store" ? "Toko" : "UMKM"}) · {formatRelative(e.created_at)}
+                        oleh {e.actor.name}
+                        {e.actor.role ? ` (${ACTOR_LABEL[e.actor.role] ?? e.actor.role})` : ""} · {formatRelative(e.created_at)}
                       </p>
                       {e.note && <p className="text-sm text-foreground/80 italic">{e.note}</p>}
                     </div>
@@ -330,28 +378,18 @@ export function ApplicationDetail({ id }: { id: number }) {
       <ShipSheet
         open={sheet === "ship"}
         onOpenChange={(o) => !o && setSheet(null)}
-        onSubmit={() => transition("in_delivery", {}, "Ditandai dalam pengiriman.")}
+        pending={pending}
+        onSubmit={(note) => void run("ship", { note }, "Ditandai dalam pengiriman.")}
       />
       <ReceiveSheet
         open={sheet === "receive"}
         onOpenChange={(o) => !o && setSheet(null)}
         items={app.items.filter((i) => i.decision === "approved")}
-        onSubmit={(qty) =>
-          transition(
-            "received",
-            {
-              items: app.items.map((it) =>
-                qty[it.id] != null
-                  ? {
-                      ...it,
-                      received_quantity: qty[it.id],
-                      stock_quantity: qty[it.id],
-                      stock_status: qty[it.id] > 0 ? "available" : "out_of_stock",
-                      stock_updated_at: "2026-11-04T16:00:00+07:00",
-                    }
-                  : it
-              ),
-            },
+        pending={pending}
+        onSubmit={(qty, note) =>
+          void run(
+            "receive",
+            { items: Object.entries(qty).map(([item_id, received_quantity]) => ({ item_id: Number(item_id), received_quantity })), note },
             "Barang diterima. Produk masuk ke Stok di rak."
           )
         }
@@ -359,7 +397,8 @@ export function ApplicationDetail({ id }: { id: number }) {
       <CancelSheet
         open={sheet === "cancel"}
         onOpenChange={(o) => !o && setSheet(null)}
-        onSubmit={() => transition("cancelled", {}, "Pengajuan dibatalkan.")}
+        pending={pending}
+        onSubmit={(reason) => void run("cancel", { reason }, "Pengajuan dibatalkan.")}
       />
       <ConfirmDialog
         open={sheet === "complete"}
@@ -367,10 +406,15 @@ export function ApplicationDetail({ id }: { id: number }) {
         title="Selesaikan kerja sama ini?"
         description="Stok tidak bisa diubah lagi."
         confirmLabel="Ya, selesaikan"
-        onConfirm={() => transition("completed", {}, "Kerja sama diselesaikan.")}
+        onConfirm={() => void run("complete", { note: completeNote }, "Kerja sama diselesaikan.")}
       >
         <FormField label="Catatan (opsional)" htmlFor="complete-note">
-          <Textarea id="complete-note" placeholder="Mis. sisa barang sudah diambil." />
+          <Textarea
+            id="complete-note"
+            value={completeNote}
+            onChange={(e) => setCompleteNote(e.target.value)}
+            placeholder="Mis. sisa barang sudah diambil."
+          />
         </FormField>
       </ConfirmDialog>
     </AppShell>
@@ -378,24 +422,28 @@ export function ApplicationDetail({ id }: { id: number }) {
 }
 
 function ItemCard({
+  applicationId,
   item: it,
   status,
   stockMode,
   editableStock,
   umkmName,
+  onStockChanged,
 }: {
+  applicationId: string
   item: ApplicationItem
   status: ApplicationStatus
   stockMode: Application["stock_mode"]
   editableStock: boolean
   umkmName: string
+  onStockChanged: () => void
 }) {
   const p = it.product
   const onShelf = ["received", "completed"].includes(status) && it.decision === "approved"
   return (
     <div className="flex flex-col gap-4 bg-muted/50 p-5">
       <div className="flex gap-4">
-        <Thumb kind="product" className="bg-background" />
+        <Thumb kind="product" src={p.photo_url} className="bg-background" />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex items-start justify-between gap-3">
             <p className="font-medium">{p.name}</p>
@@ -403,7 +451,11 @@ function ItemCard({
           </div>
           <p className="text-xs text-muted-foreground">
             Setor {formatRupiah(p.base_price)} · Saran jual {formatRupiah(p.suggested_retail_price)} ·{" "}
-            {p.shelf_life_days ? formatShelfLife(p.shelf_life_days) : `s.d. ${formatDate(p.expiry_date!, { weekday: false })}`}
+            {p.shelf_life_days
+              ? formatShelfLife(p.shelf_life_days)
+              : p.expiry_date
+                ? `s.d. ${formatDate(p.expiry_date, { weekday: false })}`
+                : "—"}
           </p>
         </div>
       </div>
@@ -412,9 +464,9 @@ function ItemCard({
         <div className="grid grid-cols-2 gap-px bg-border sm:grid-cols-4">
           {[
             ["Jumlah disetujui", String(it.approved_quantity)],
-            ["Harga jual", formatRupiah(it.sell_price!)],
-            ["Komisi toko", `${formatRupiah(it.commission_per_unit!)}/unit`],
-            ["Diterima UMKM", `${formatRupiah(it.umkm_income_per_unit!)}/unit`],
+            ["Harga jual", formatRupiah(it.sell_price ?? 0)],
+            ["Komisi toko", `${formatRupiah(it.commission_per_unit ?? 0)}/unit`],
+            ["Diterima UMKM", `${formatRupiah(it.umkm_income_per_unit ?? 0)}/unit`],
           ].map(([label, value]) => (
             <div key={label} className="flex flex-col gap-0.5 bg-background p-3">
               <span className="text-[0.625rem] font-semibold tracking-widest text-muted-foreground uppercase">{label}</span>
@@ -435,12 +487,16 @@ function ItemCard({
           </p>
           {editableStock && status === "received" ? (
             <StockControl
-              row={{
-                stock_mode: stockMode,
-                stock_quantity: it.stock_quantity,
-                stock_status: it.stock_status,
-                umkm: { business_name: umkmName } as Application["umkm"],
-              }}
+              key={`${it.stock_quantity}-${it.stock_status}`}
+              applicationId={applicationId}
+              itemId={it.id}
+              mode={stockMode}
+              quantity={it.stock_quantity}
+              status={it.stock_status}
+              max={it.received_quantity ?? 999}
+              umkmName={umkmName}
+              onSaved={onStockChanged}
+              onConflict={onStockChanged}
             />
           ) : (
             <StockChip status={it.stock_status} quantity={it.stock_quantity} mode={stockMode} />
@@ -455,10 +511,12 @@ function ShipSheet({
   open,
   onOpenChange,
   onSubmit,
+  pending,
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
   onSubmit: (note: string) => void
+  pending: boolean
 }) {
   const [note, setNote] = React.useState("")
   return (
@@ -474,7 +532,9 @@ function ShipSheet({
           </div>
         </SheetHeader>
         <SheetFooter className="pt-0">
-          <Button onClick={() => onSubmit(note)}>Tandai dikirim</Button>
+          <Button disabled={pending} onClick={() => onSubmit(note)}>
+            {pending ? "Menyimpan…" : "Tandai dikirim"}
+          </Button>
         </SheetFooter>
       </SheetContent>
     </Sheet>
@@ -486,15 +546,18 @@ function ReceiveSheet({
   onOpenChange,
   items,
   onSubmit,
+  pending,
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
   items: ApplicationItem[]
-  onSubmit: (qty: Record<number, number>) => void
+  onSubmit: (qty: Record<number, number>, note: string) => void
+  pending: boolean
 }) {
   const [qty, setQty] = React.useState<Record<number, number>>(() =>
     Object.fromEntries(items.map((i) => [i.id, i.approved_quantity ?? 0]))
   )
+  const [note, setNote] = React.useState("")
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="bottom" className="mx-auto max-h-[90svh] max-w-lg overflow-y-auto">
@@ -520,12 +583,19 @@ function ReceiveSheet({
           </div>
           <div className="mt-4">
             <FormField label="Catatan (opsional)" htmlFor="receive-note">
-              <Textarea id="receive-note" placeholder="Mis. 2 bungkus kemasan sobek." />
+              <Textarea
+                id="receive-note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Mis. 2 bungkus kemasan sobek."
+              />
             </FormField>
           </div>
         </SheetHeader>
         <SheetFooter className="pt-0">
-          <Button onClick={() => onSubmit(qty)}>Konfirmasi diterima</Button>
+          <Button disabled={pending} onClick={() => onSubmit(qty, note)}>
+            {pending ? "Menyimpan…" : "Konfirmasi diterima"}
+          </Button>
         </SheetFooter>
       </SheetContent>
     </Sheet>
@@ -538,14 +608,17 @@ function CancelSheet({
   open,
   onOpenChange,
   onSubmit,
+  pending,
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
   onSubmit: (reason: string) => void
+  pending: boolean
 }) {
   const [chip, setChip] = React.useState<string | null>(null)
   const [text, setText] = React.useState("")
   const reason = chip === "Lainnya" || !chip ? text.trim() : [chip, text.trim()].filter(Boolean).join(". ")
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="bottom" className="mx-auto max-w-lg">
@@ -580,8 +653,8 @@ function CancelSheet({
           </div>
         </SheetHeader>
         <SheetFooter className="pt-0">
-          <Button variant="destructive" disabled={!reason} onClick={() => onSubmit(reason)}>
-            Ya, batalkan
+          <Button variant="destructive" disabled={!reason || pending} onClick={() => onSubmit(reason)}>
+            {pending ? "Menyimpan…" : "Ya, batalkan"}
           </Button>
         </SheetFooter>
       </SheetContent>

@@ -13,8 +13,10 @@ import {
 } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
-import { CATEGORIES, FEED_OPPORTUNITIES, MY_PRODUCTS } from "@/lib/mock-data"
-import type { MatchLevel } from "@/lib/types"
+import type { Paginated } from "@/lib/api"
+import { useApi } from "@/lib/use-api"
+import type { Category, MatchLevel, Opportunity, Product } from "@/lib/types"
+import { toast } from "@/components/ui/toast"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -32,7 +34,8 @@ import {
 } from "@/components/ui/sheet"
 import { useQueryState } from "@/hooks/use-query-state"
 import { AppShell } from "@/components/app/app-shell"
-import { EmptyState, PageHeading } from "@/components/app/blocks"
+import { EmptyState, ListSkeleton, PageHeading } from "@/components/app/blocks"
+import { LoadError } from "@/components/app/feedback"
 import { OpportunityCard } from "@/components/app/cards"
 import { ChoiceChips } from "@/components/app/inputs"
 
@@ -49,10 +52,14 @@ const MATCH_LABEL: Record<MatchFilter, string> = {
 }
 const SORT_LABEL: Record<Sort, string> = { match: "Paling cocok", distance: "Terdekat", newest: "Terbaru" }
 
-/** Default category filter = categories of my active products. */
-const DEFAULT_CATEGORIES = [...new Set(MY_PRODUCTS.filter((p) => p.is_active).map((p) => p.category.id))].join(",")
-
+/** P15 · Cari peluang: `GET /opportunities` with filters kept in the URL. */
 export function OpportunityFeed() {
+  const productsQ = useApi<Paginated<Product>>("user", "/me/products", { is_active: true, page_size: 100 })
+  const categoriesQ = useApi<Category[]>("user", "/categories")
+  const CATEGORIES = categoriesQ.data ?? []
+  const myProducts = productsQ.data?.results ?? []
+  /** Default category filter = categories (slugs) of my active products. */
+  const DEFAULT_CATEGORIES = [...new Set(myProducts.map((p) => p.category.slug))].sort().join(",")
   const router = useRouter()
   const pathname = usePathname()
   const [radius, setRadius] = useQueryState<Radius>("radius_km", "5")
@@ -61,23 +68,38 @@ export function OpportunityFeed() {
   const [sort, setSort] = useQueryState<Sort>("sort", "match")
   const [source, setSource] = React.useState<"business" | "gps">("business")
   const [catSheet, setCatSheet] = React.useState(false)
-  const [draftCats, setDraftCats] = React.useState<number[]>([])
+  const [draftCats, setDraftCats] = React.useState<string[]>([])
+  const [gps, setGps] = React.useState<{ lat: number; lng: number } | null>(null)
 
-  const categories = categoryParam ? categoryParam.split(",").map(Number) : []
-  const hasActiveProducts = MY_PRODUCTS.some((p) => p.is_active)
+  const categories = categoryParam ? categoryParam.split(",") : []
+  const hasActiveProducts = myProducts.length > 0
 
-  const results = FEED_OPPORTUNITIES.filter(
-    (o) =>
-      (o.store.distance_km ?? 0) <= Number(radius) &&
-      (!categories.length || o.categories.some((c) => categories.includes(c.id))) &&
-      (match === "all" || o.match?.level === match)
-  ).sort((a, b) =>
-    sort === "distance"
-      ? (a.store.distance_km ?? 0) - (b.store.distance_km ?? 0)
-      : sort === "newest"
-        ? b.created_at.localeCompare(a.created_at)
-        : (b.match?.score ?? 0) - (a.match?.score ?? 0)
-  )
+  const locate = () => {
+    if (!("geolocation" in navigator)) {
+      toast.add({ title: "Perangkat ini tidak mendukung lokasi.", type: "error" })
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGps({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        setSource("gps")
+      },
+      () => toast.add({ title: "Izin lokasi ditolak. Memakai lokasi usaha.", type: "error" })
+    )
+  }
+
+  // Wait for products so the default category filter is known before the first request.
+  const ready = !productsQ.loading
+  const feedQ = useApi<Paginated<Opportunity>>("user", ready ? "/opportunities" : null, {
+    radius_km: radius,
+    category: categories,
+    match: match === "all" ? undefined : match,
+    sort,
+    lat: source === "gps" ? gps?.lat : undefined,
+    lng: source === "gps" ? gps?.lng : undefined,
+    page_size: 100,
+  })
+  const results = feedQ.data?.results ?? []
 
   const nextRadius = RADII[RADII.indexOf(radius) + 1]
   const isDefault = radius === "5" && categoryParam === DEFAULT_CATEGORIES && match === "all" && sort === "match"
@@ -100,7 +122,7 @@ export function OpportunityFeed() {
               <DropdownMenuItem onClick={() => setSource("business")}>
                 <IconMapPin /> Lokasi usaha
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setSource("gps")}>
+              <DropdownMenuItem onClick={locate}>
                 <IconCurrentLocation /> Gunakan lokasi saat ini
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -153,9 +175,13 @@ export function OpportunityFeed() {
         </Link>
       )}
 
-      {results.length ? (
+      {feedQ.error && !feedQ.data ? (
+        <LoadError error={feedQ.error} onRetry={feedQ.reload} />
+      ) : feedQ.loading ? (
+        <ListSkeleton rows={4} />
+      ) : results.length ? (
         <>
-          <p className="text-sm text-muted-foreground">{results.length} peluang ditemukan</p>
+          <p className="text-sm text-muted-foreground">{feedQ.data?.count ?? results.length} peluang ditemukan</p>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {results.map((o) => (
               <OpportunityCard key={o.id} opportunity={o} side="umkm" href={`/umkm/peluang/${o.id}`} />
@@ -187,7 +213,7 @@ export function OpportunityFeed() {
             <div className="mt-4">
               <ChoiceChips
                 label="Kategori"
-                options={CATEGORIES.map((c) => ({ value: c.id, label: c.name }))}
+                options={CATEGORIES.map((c) => ({ value: c.slug, label: c.name }))}
                 value={draftCats}
                 onChange={setDraftCats}
               />
@@ -200,7 +226,7 @@ export function OpportunityFeed() {
             <Button
               className="flex-1"
               onClick={() => {
-                setCategoryParam(draftCats.join(","))
+                setCategoryParam([...draftCats].sort().join(","))
                 setCatSheet(false)
               }}
             >

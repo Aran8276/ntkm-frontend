@@ -18,7 +18,7 @@ import {
 } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
-import type { AdminFile } from "@/lib/admin-types"
+import type { FileBrief } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -190,8 +190,8 @@ export function EntityMultiPicker({
 // Document viewer
 // ---------------------------------------------------------------------------
 
-/** "Penampil dokumen": image with zoom & rotate, PDF in an embedded viewer (placeholders in the mock). */
-export function DocumentViewer({ files, className }: { files: AdminFile[]; className?: string }) {
+/** "Penampil dokumen": image with zoom & rotate, PDF in an embedded viewer. */
+export function DocumentViewer({ files, className }: { files: Pick<FileBrief, "id" | "name" | "mime" | "url">[]; className?: string }) {
   const [index, setIndex] = React.useState(0)
   const [zoom, setZoom] = React.useState(1)
   const [rotate, setRotate] = React.useState(0)
@@ -243,27 +243,33 @@ export function DocumentViewer({ files, className }: { files: AdminFile[]; class
             </Button>
           </>
         )}
-        <Button variant="ghost" size="icon-sm" render={<a href="#" target="_blank" rel="noreferrer" />} nativeButton={false} aria-label="Buka di tab baru">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          disabled={!file.url}
+          render={<a href={file.url ?? undefined} target="_blank" rel="noreferrer" />}
+          nativeButton={false}
+          aria-label="Buka di tab baru"
+        >
           <IconExternalLink />
         </Button>
       </div>
       <div className="relative flex aspect-[4/3] items-center justify-center overflow-hidden bg-muted">
-        {pdf ? (
-          <div className="flex h-[88%] w-[62%] flex-col gap-2.5 bg-background p-6 shadow-sm">
-            <IconFileTypePdf className="mb-2 size-7 text-destructive" stroke={1.5} />
-            {Array.from({ length: 9 }).map((_, i) => (
-              <span key={i} className="h-1.5 bg-muted" style={{ width: `${[92, 80, 86, 60, 90, 75, 84, 50, 70][i]}%` }} />
-            ))}
-            <span className="mt-auto self-end text-[0.625rem] text-muted-foreground">Halaman 1 dari 2</span>
+        {!file.url ? (
+          <div className="flex flex-col items-center gap-2 text-muted-foreground">
+            {pdf ? <IconFileTypePdf className="size-10" stroke={1.25} /> : <IconPhoto className="size-10" stroke={1.25} />}
+            <span className="text-xs">File sudah dihapus.</span>
           </div>
+        ) : pdf ? (
+          <iframe src={file.url} title={file.name} className="size-full bg-background" />
         ) : (
-          <div
-            className="flex aspect-[3/2] w-2/3 flex-col items-center justify-center gap-2 bg-foreground/10 text-muted-foreground transition-transform"
+          // eslint-disable-next-line @next/next/no-img-element -- uploaded file served by the API
+          <img
+            src={file.url}
+            alt={file.name}
+            className="max-h-full max-w-full object-contain transition-transform"
             style={{ transform: `scale(${zoom}) rotate(${rotate}deg)` }}
-          >
-            <IconPhoto className="size-10" stroke={1.25} />
-            <span className="text-xs">{file.name}</span>
-          </div>
+          />
         )}
       </div>
     </div>

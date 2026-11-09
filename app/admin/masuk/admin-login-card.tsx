@@ -9,6 +9,19 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Spinner } from "@/components/ui/spinner"
 import { Logo } from "@/components/app/logo"
 import { GoogleMark } from "@/app/masuk/login-card"
+import { clearTokens, isApiError } from "@/lib/api"
+import { clearCache, useApi, useSessionPresent } from "@/lib/use-api"
+import type { Me } from "@/lib/types"
+import { DEV_LOGIN, DevLoginForm, GOOGLE_CLIENT_ID, GoogleButton, signIn } from "@/components/app/sign-in"
+
+const DEMO_ADMINS = [
+  { email: "admin@ritelhub.local", label: "Superadmin" },
+  { email: "nadia@ritelhub.local", label: "Staff" },
+]
+
+function safeNext(next: string | null) {
+  return next && next.startsWith("/admin") && !next.startsWith("/admin/masuk") ? next : null
+}
 
 const REASONS: Record<string, { text: string; tone: "danger" | "info" }> = {
   not_admin: { text: "Akun ini tidak memiliki akses admin.", tone: "danger" },
@@ -21,16 +34,37 @@ const REASONS: Record<string, { text: string; tone: "danger" | "info" }> = {
 export function AdminLoginCard() {
   const params = useSearchParams()
   const router = useRouter()
-  const next = params.get("next")
+  const next = safeNext(params.get("next"))
   const [reason, setReason] = React.useState(params.get("reason"))
   const [state, setState] = React.useState<"idle" | "loading" | "error">("idle")
   const msg = reason ? REASONS[reason] : null
 
-  const signIn = () => {
+  // Admin already signed in → A02.
+  const present = useSessionPresent("admin")
+  const meQ = useApi<Me>("admin", present && state !== "loading" ? "/me" : null)
+  React.useEffect(() => {
+    if (meQ.data?.is_admin) router.replace(next ?? "/admin")
+  }, [meQ.data, next, router])
+
+  const run = async (credential: { id_token: string } | { email: string }) => {
     setState("loading")
     setReason(null)
-    // Mock: id_token → POST /auth/google → GET /me (is_admin) → next or A02.
-    setTimeout(() => router.push(next && next.startsWith("/admin") ? next : "/admin"), 900)
+    try {
+      const res = await signIn("admin", credential)
+      if (!res.user.is_admin) {
+        clearTokens("admin")
+        clearCache("admin")
+        setReason("not_admin")
+        setState("idle")
+        return
+      }
+      router.replace(next ?? "/admin")
+    } catch (e) {
+      if (isApiError(e) && e.code === "account_suspended") {
+        setReason("suspended")
+        setState("idle")
+      } else setState("error")
+    }
   }
 
   return (
@@ -59,24 +93,21 @@ export function AdminLoginCard() {
         </Alert>
       )}
 
-      <button
-        type="button"
-        onClick={signIn}
-        disabled={state === "loading"}
-        className="flex h-11 w-full items-center justify-center gap-3 rounded-full border border-[#dadce0] bg-white px-4 text-sm font-medium text-[#1f1f1f] transition-colors outline-none hover:bg-[#f8faff] focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-70"
-      >
-        {state === "loading" ? (
-          <>
-            <Spinner className="size-4" />
-            Sedang masuk…
-          </>
-        ) : (
-          <>
-            <GoogleMark />
-            Masuk dengan Google
-          </>
-        )}
-      </button>
+      {state === "loading" ? (
+        <div className="flex h-11 w-full items-center justify-center gap-3 rounded-full border border-[#dadce0] bg-white px-4 text-sm font-medium text-[#1f1f1f]">
+          <Spinner className="size-4" />
+          Sedang masuk…
+        </div>
+      ) : GOOGLE_CLIENT_ID ? (
+        <GoogleButton onCredential={(id_token) => run({ id_token })} onLoadError={() => setState("error")} />
+      ) : (
+        <div className="flex h-11 w-full items-center justify-center gap-3 rounded-full border border-[#dadce0] bg-white px-4 text-sm font-medium text-[#1f1f1f] opacity-60">
+          <GoogleMark />
+          Masuk dengan Google belum dikonfigurasi
+        </div>
+      )}
+
+      {DEV_LOGIN && <DevLoginForm accounts={DEMO_ADMINS} disabled={state === "loading"} onSubmit={(email) => run({ email })} />}
 
       <div className="border-t pt-6">
         <Link href="/" className="text-xs font-semibold tracking-widest uppercase hover:underline">

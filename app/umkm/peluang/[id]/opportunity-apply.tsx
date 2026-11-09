@@ -7,7 +7,9 @@ import { IconAlertTriangle, IconChevronDown, IconMapPin, IconPlus } from "@table
 
 import { cn } from "@/lib/utils"
 import { formatCommission, formatDate, formatDistance, formatRupiah } from "@/lib/format"
-import { FEED_OPPORTUNITIES, MY_PRODUCTS, productEligibility } from "@/lib/mock-data"
+import { api, isApiError } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { Application, FeedOpportunityDetail } from "@/lib/types"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
@@ -25,7 +27,8 @@ import {
 import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 import { AppShell } from "@/components/app/app-shell"
-import { InfoRow, Section, Thumb } from "@/components/app/blocks"
+import { InfoRow, PageSkeletonBody, Section, Thumb } from "@/components/app/blocks"
+import { LoadError, handleApiError } from "@/components/app/feedback"
 import { FormField } from "@/components/app/form-field"
 import { CharCount, CommissionCalculator } from "@/components/app/inputs"
 import { ApplicationStatusChip, MatchBadge, MatchReasons } from "@/components/app/status"
@@ -36,31 +39,64 @@ import {
   ScheduleList,
 } from "@/components/app/opportunity-details"
 
-export function OpportunityApply({ id }: { id: number }) {
+/** P16 · Detail peluang + ajukan. */
+export function OpportunityApply({ id }: { id: string }) {
+  const q = useApi<FeedOpportunityDetail>("user", `/opportunities/${id}`)
+  if (!q.data)
+    return (
+      <AppShell role="umkm" title="Detail peluang" back="/umkm/peluang" width="wide">
+        {q.error ? (
+          <LoadError
+            error={q.error}
+            onRetry={q.reload}
+            backHref="/umkm/peluang"
+            backLabel="Kembali ke daftar peluang"
+          />
+        ) : (
+          <PageSkeletonBody />
+        )}
+      </AppShell>
+    )
+  return <ApplyView o={q.data} reload={q.reload} />
+}
+
+function ApplyView({ o, reload }: { o: FeedOpportunityDetail; reload: () => Promise<void> }) {
   const router = useRouter()
-  const o = FEED_OPPORTUNITIES.find((x) => x.id === id)!
-  const products = MY_PRODUCTS.filter((p) => p.is_active).map((p) => ({ product: p, ...productEligibility(o, p) }))
+  const products = o.my_products.map((p) => ({ product: p, eligible: p.eligible, ineligible_reasons: p.ineligible_reasons }))
   const firstEligible = products.find((p) => p.eligible)?.product
 
-  const [selected, setSelected] = React.useState<number[]>([])
+  const [selected, setSelected] = React.useState<string[]>([])
   const [note, setNote] = React.useState("")
   const [confirm, setConfirm] = React.useState(false)
   const [sending, setSending] = React.useState(false)
+  const [legalError, setLegalError] = React.useState<string | null>(null)
+  const [gone, setGone] = React.useState(false)
 
   const max = o.max_products_per_umkm
-  const unavailable = o.quota_remaining === 0 || o.status !== "open"
+  const unavailable = gone || !o.is_available || o.quota_remaining === 0 || o.status !== "open"
   const applied = !!o.my_application
-  const legalMissing = (o.requirements.requires_pirt && products.some((p) => p.ineligible_reasons.includes("Belum memiliki PIRT")))
+  const legalMissing = !!legalError
 
-  const toggle = (pid: number, checked: boolean) =>
+  const toggle = (pid: string, checked: boolean) =>
     setSelected((prev) => (checked ? [...prev, pid] : prev.filter((x) => x !== pid)))
 
-  const submit = () => {
+  const submit = async () => {
     setSending(true)
-    setTimeout(() => {
+    try {
+      const app = await api.post<Application>("/applications", { opportunity_id: o.id, product_ids: selected, note })
       toast.add({ title: "Pengajuan terkirim.", type: "success" })
-      router.push("/kerja-sama/201")
-    }, 800)
+      void revalidate("user", "/applications", "/opportunities", "/notifications")
+      router.push(`/kerja-sama/${app.id}`)
+    } catch (e) {
+      setSending(false)
+      setConfirm(false)
+      if (isApiError(e) && e.code === "validation_error" && e.field("legal")) {
+        setLegalError(e.field("legal")!)
+        return
+      }
+      if (isApiError(e) && (e.code === "not_found" || e.code === "conflict")) setGone(true)
+      handleApiError(e, { onReload: reload })
+    }
   }
 
   return (
@@ -97,7 +133,7 @@ export function OpportunityApply({ id }: { id: number }) {
       <Section>
         <div className="flex flex-col gap-4">
           <div className="flex items-start gap-4">
-            <Thumb kind="store" size="lg" />
+            <Thumb kind="store" size="lg" src={o.store.photo_url} />
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <p className="text-lg font-medium">{o.store.name}</p>
               <p className="text-sm text-muted-foreground">{o.store.address}</p>
@@ -182,7 +218,7 @@ export function OpportunityApply({ id }: { id: number }) {
                     <Alert variant="destructive">
                       <IconAlertTriangle />
                       <AlertDescription>
-                        Toko ini mensyaratkan PIRT.{" "}
+                        {legalError}{" "}
                         <Link href="/profil/umkm">Lengkapi legalitas</Link>
                       </AlertDescription>
                     </Alert>
@@ -269,7 +305,7 @@ export function OpportunityApply({ id }: { id: number }) {
           </div>
           <DialogFooter>
             <DialogClose render={<Button variant="outline" />}>Batal</DialogClose>
-            <Button onClick={submit} disabled={sending}>
+            <Button onClick={() => void submit()} disabled={sending}>
               {sending ? (
                 <>
                   <Spinner data-icon="inline-start" /> Mengirim…

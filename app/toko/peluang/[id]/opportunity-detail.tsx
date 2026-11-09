@@ -6,13 +6,15 @@ import { IconInbox } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
 import { formatDate, formatDateTime } from "@/lib/format"
-import { MY_OPPORTUNITIES, STORE_APPLICATIONS } from "@/lib/mock-data"
-import type { ApplicationStatus } from "@/lib/types"
+import { api, type Paginated } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { Application, ApplicationStatus, Opportunity } from "@/lib/types"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { toast } from "@/components/ui/toast"
 import { AppShell } from "@/components/app/app-shell"
-import { ConfirmDialog, EmptyState, FilterChips, Section } from "@/components/app/blocks"
+import { ConfirmDialog, EmptyState, FilterChips, ListSkeleton, PageSkeletonBody, Section } from "@/components/app/blocks"
+import { LoadError, handleApiError } from "@/components/app/feedback"
 import { ApplicationCard } from "@/components/app/cards"
 import { APPLICATION_STATUS, OpportunityStatusChip } from "@/components/app/status"
 import { CategoryChips, RequirementList, ScheduleList } from "@/components/app/opportunity-details"
@@ -27,14 +29,36 @@ const TABS = {
 
 type Tab = keyof typeof TABS
 
-export function OpportunityDetail({ id }: { id: number }) {
-  const initial = MY_OPPORTUNITIES.find((o) => o.id === id)!
-  const [o, setO] = React.useState(initial)
+/** P09 · Detail peluang (sisi toko). */
+export function OpportunityDetail({ id }: { id: string }) {
+  const oq = useApi<Opportunity>("user", `/me/opportunities/${id}`)
+  const appsQ = useApi<Paginated<Application>>("user", "/applications", { as: "store", opportunity_id: id, page_size: 100 })
   const [tab, setTab] = React.useState<Tab>("submitted")
   const [confirmClose, setConfirmClose] = React.useState(false)
-  const apps = STORE_APPLICATIONS.filter((a) => a.opportunity.id === o.id)
+
+  const o = oq.data
+  if (!o)
+    return (
+      <AppShell role="store" title="Detail peluang" back="/toko/peluang" width="wide">
+        {oq.error ? <LoadError error={oq.error} onRetry={oq.reload} backHref="/toko" backLabel="Kembali ke dashboard" /> : <PageSkeletonBody />}
+      </AppShell>
+    )
+
+  const apps = appsQ.data?.results ?? []
   const list = apps.filter((a) => (TABS[tab].statuses as ApplicationStatus[]).includes(a.status))
   const closed = o.status === "closed"
+  const counts = o.application_counts ?? {}
+
+  const close = async () => {
+    try {
+      const next = await api.post<Opportunity>(`/me/opportunities/${o.id}/close`)
+      oq.mutate(next)
+      toast.add({ title: "Peluang ditutup.", type: "success" })
+      void revalidate("user", "/me/opportunities")
+    } catch (e) {
+      handleApiError(e, { onReload: oq.reload })
+    }
+  }
 
   return (
     <AppShell
@@ -77,7 +101,7 @@ export function OpportunityDetail({ id }: { id: number }) {
                     {o.quota_used} dari {o.quota} UMKM disetujui
                   </span>
                 </div>
-                <Progress value={(o.quota_used / o.quota) * 100} />
+                <Progress value={o.quota ? (o.quota_used / o.quota) * 100 : 0} />
               </div>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {(Object.keys(APPLICATION_STATUS) as ApplicationStatus[]).map((s) => (
@@ -85,7 +109,7 @@ export function OpportunityDetail({ id }: { id: number }) {
                     <span className="text-[0.625rem] font-semibold tracking-widest text-muted-foreground uppercase">
                       {APPLICATION_STATUS[s].label}
                     </span>
-                    <span className="text-lg tabular-nums">{o.application_counts[s] ?? 0}</span>
+                    <span className="text-lg tabular-nums">{counts[s] ?? 0}</span>
                   </div>
                 ))}
               </div>
@@ -118,7 +142,9 @@ export function OpportunityDetail({ id }: { id: number }) {
                 count: t === "submitted" ? apps.filter((a) => a.status === "submitted").length : undefined,
               }))}
             />
-            {list.length ? (
+            {appsQ.loading ? (
+              <ListSkeleton rows={2} />
+            ) : list.length ? (
               <div className="flex flex-col gap-3">
                 {list.map((a) => (
                   <ApplicationCard key={a.id} application={a} viewer="store" inset />
@@ -140,10 +166,7 @@ export function OpportunityDetail({ id }: { id: number }) {
         description="Peluang tidak akan tampil lagi di feed UMKM. Pengajuan yang masuk tetap bisa Anda tinjau."
         confirmLabel="Ya, tutup"
         destructive
-        onConfirm={() => {
-          setO({ ...o, status: "closed" })
-          toast.add({ title: "Peluang ditutup.", type: "success" })
-        }}
+        onConfirm={() => void close()}
       />
     </AppShell>
   )

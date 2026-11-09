@@ -4,8 +4,10 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 import { IconInfoCircle } from "@tabler/icons-react"
 
-import { CATEGORIES, MY_STORE } from "@/lib/mock-data"
-import type { Commission, Opportunity, ReceivingSlot } from "@/lib/types"
+import { addDaysIso, todayIso } from "@/lib/format"
+import { api } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { Category, Commission, OperatingHour, Opportunity, ReceivingSlot, StoreProfile } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -16,7 +18,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 import { AppShell } from "@/components/app/app-shell"
-import { ConfirmDialog, Section } from "@/components/app/blocks"
+import { ConfirmDialog, PageSkeletonBody, Section } from "@/components/app/blocks"
+import { LoadError, formLevelError, handleApiError } from "@/components/app/feedback"
 import { FormField } from "@/components/app/form-field"
 import {
   CharCount,
@@ -28,17 +31,72 @@ import {
   SuffixInput,
 } from "@/components/app/inputs"
 
-const TODAY = "2026-11-04"
-const DEFAULT_VALID_UNTIL = "2026-12-04"
+/** API field → form error key (scroll target `f-<key>`). */
+const FIELD: Record<string, string> = {
+  title: "title",
+  description: "description",
+  category_ids: "categories",
+  "requirements.min_shelf_life_days": "minShelf",
+  "requirements.max_retail_price": "maxPrice",
+  "requirements.notes": "notes",
+  quota: "quota",
+  max_products_per_umkm: "quota",
+  commission: "commission",
+  "commission.value": "commission",
+  "commission.type": "commission",
+  receiving_schedule: "schedule",
+  valid_until: "validUntil",
+}
 
-export function OpportunityForm({ opportunity }: { opportunity?: Opportunity }) {
+/**
+ * P08 loader: categories, the store profile (receiving slots must sit inside
+ * operating hours) and, in edit mode, `GET /me/opportunities/{id}`.
+ */
+export function OpportunityFormPage({ id }: { id?: string }) {
+  const categories = useApi<Category[]>("user", "/categories")
+  const store = useApi<StoreProfile>("user", "/me/store-profile")
+  const opp = useApi<Opportunity>("user", id ? `/me/opportunities/${id}` : null)
+  const failed = [categories, store, opp].find((q) => q.error && !q.data)?.error
+  const ready = categories.data && store.data && (!id || opp.data)
+  if (ready && opp.data?.status !== "closed")
+    return (
+      <OpportunityForm
+        key={opp.data?.id ?? "new"}
+        opportunity={opp.data}
+        categories={categories.data!}
+        hours={store.data!.operating_hours}
+      />
+    )
+  return (
+    <AppShell role="store" title={id ? "Ubah peluang" : "Peluang baru"} back={id ? `/toko/peluang/${id}` : "/toko/peluang"} hideNav>
+      {failed ? (
+        <LoadError error={failed} onRetry={() => [categories, store, opp].forEach((q) => void q.reload())} backHref="/toko/peluang" backLabel="Kembali ke peluang" />
+      ) : opp.data?.status === "closed" ? (
+        <LoadError error={undefined} backHref={`/toko/peluang/${id}`} />
+      ) : (
+        <PageSkeletonBody />
+      )}
+    </AppShell>
+  )
+}
+
+function OpportunityForm({
+  opportunity,
+  categories: CATEGORIES,
+  hours,
+}: {
+  opportunity?: Opportunity
+  categories: Category[]
+  hours: OperatingHour[]
+}) {
   const router = useRouter()
   const edit = !!opportunity
   const o = opportunity
+  const [TODAY] = React.useState(() => todayIso())
 
   const [title, setTitle] = React.useState(o?.title ?? "")
   const [description, setDescription] = React.useState(o?.description ?? "")
-  const [categories, setCategories] = React.useState<number[]>(o?.categories.map((c) => c.id) ?? [])
+  const [categories, setCategories] = React.useState<string[]>(o?.categories.map((c) => c.id) ?? [])
   const [minShelf, setMinShelf] = React.useState(o?.requirements.min_shelf_life_days?.toString() ?? "")
   const [maxPrice, setMaxPrice] = React.useState<number | null>(o?.requirements.max_retail_price ?? null)
   const [reqNib, setReqNib] = React.useState(o?.requirements.requires_nib ?? false)
@@ -52,10 +110,11 @@ export function OpportunityForm({ opportunity }: { opportunity?: Opportunity }) 
   const [schedule, setSchedule] = React.useState<ReceivingSlot[]>(
     o?.receiving_schedule ?? [{ day: "mon", start: "08:00", end: "10:00" }]
   )
-  const [validUntil, setValidUntil] = React.useState(o?.valid_until ?? DEFAULT_VALID_UNTIL)
+  const [validUntil, setValidUntil] = React.useState(() => o?.valid_until ?? addDaysIso(30))
   const [errors, setErrors] = React.useState<Record<string, string>>({})
   const [saving, setSaving] = React.useState(false)
   const [confirmCancel, setConfirmCancel] = React.useState(false)
+  const [formError, setFormError] = React.useState<string | undefined>()
   const dirty = React.useRef(false)
   const touch = <T,>(set: (v: T) => void) => (v: T) => {
     dirty.current = true
@@ -80,11 +139,70 @@ export function OpportunityForm({ opportunity }: { opportunity?: Opportunity }) 
       document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
       return
     }
+    void save()
+  }
+
+  const payload = () => ({
+    title: title.trim(),
+    description,
+    category_ids: categories,
+    requirements: {
+      min_shelf_life_days: minShelf ? Number(minShelf) : null,
+      max_retail_price: maxPrice || null,
+      requires_nib: reqNib,
+      requires_pirt: reqPirt,
+      requires_halal: reqHalal,
+      notes,
+    },
+    quota,
+    max_products_per_umkm: maxProducts,
+    commission,
+    receiving_schedule: schedule,
+    valid_until: validUntil,
+  })
+
+  const save = async () => {
     setSaving(true)
-    setTimeout(() => {
+    setFormError(undefined)
+    const body: Record<string, unknown> = payload()
+    try {
+      let saved: Opportunity
+      if (edit && o) {
+        // Edit mode sends only the fields that changed.
+        const before: Record<string, unknown> = {
+          title: o.title,
+          description: o.description,
+          category_ids: o.categories.map((c) => c.id),
+          requirements: o.requirements,
+          quota: o.quota,
+          max_products_per_umkm: o.max_products_per_umkm,
+          commission: o.commission,
+          receiving_schedule: o.receiving_schedule,
+          valid_until: o.valid_until,
+        }
+        const diff = Object.fromEntries(Object.entries(body).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(before[k])))
+        saved = await api.patch<Opportunity>(`/me/opportunities/${o.id}`, diff)
+      } else saved = await api.post<Opportunity>("/me/opportunities", body)
       toast.add({ title: edit ? "Perubahan disimpan." : "Peluang dipasang.", type: "success" })
-      router.push(`/toko/peluang/${o?.id ?? 101}`)
-    }, 700)
+      void revalidate("user", "/me/opportunities", "/applications")
+      router.push(`/toko/peluang/${saved.id}`)
+    } catch (err) {
+      setSaving(false)
+      handleApiError(err, {
+        onFieldErrors: (fields, apiErr) => {
+          const mapped: Record<string, string> = {}
+          for (const [k, v] of Object.entries(fields)) {
+            const key = FIELD[k] ?? FIELD[k.split(".")[0]] ?? (k.startsWith("receiving_schedule") ? "schedule" : undefined)
+            if (key) mapped[key] = v
+          }
+          setErrors(mapped)
+          setFormError(formLevelError(apiErr, Object.keys(FIELD).concat("receiving_schedule")))
+          const first = Object.keys(mapped)[0]
+          if (first) document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+          return true
+        },
+      })
+    }
   }
 
   const cancel = () => (dirty.current ? setConfirmCancel(true) : router.back())
@@ -171,9 +289,11 @@ export function OpportunityForm({ opportunity }: { opportunity?: Opportunity }) 
                 />
               </FormField>
             </div>
-            <FormField label="Harga jual maksimal" htmlFor="maxPrice">
-              <RupiahInput id="maxPrice" value={maxPrice} onChange={touch(setMaxPrice)} />
-            </FormField>
+            <div id="f-maxPrice">
+              <FormField label="Harga jual maksimal" htmlFor="maxPrice" error={errors.maxPrice}>
+                <RupiahInput id="maxPrice" value={maxPrice} onChange={touch(setMaxPrice)} />
+              </FormField>
+            </div>
           </div>
         </div>
       </Section>
@@ -208,10 +328,11 @@ export function OpportunityForm({ opportunity }: { opportunity?: Opportunity }) 
       </Section>
 
       <Section title="4 · Kuota">
-        <div className="grid gap-8 sm:grid-cols-2">
+        <div id="f-quota" className="grid gap-8 sm:grid-cols-2">
           <FormField
             label="Jumlah UMKM yang diterima"
             required
+            error={errors.quota}
             description={edit ? `Sudah terpakai: ${o!.quota_used}` : "1–50 UMKM."}
           >
             <NumberStepper
@@ -279,7 +400,7 @@ export function OpportunityForm({ opportunity }: { opportunity?: Opportunity }) 
         description="Slot harus berada di dalam jam operasional toko."
       >
         <div id="f-schedule" className="flex flex-col gap-2">
-          <ReceivingScheduleEditor value={schedule} onChange={touch(setSchedule)} hours={MY_STORE.operating_hours} />
+          <ReceivingScheduleEditor value={schedule} onChange={touch(setSchedule)} hours={hours} />
           {errors.schedule && <p className="text-sm text-destructive">{errors.schedule}</p>}
         </div>
       </Section>
@@ -297,6 +418,8 @@ export function OpportunityForm({ opportunity }: { opportunity?: Opportunity }) 
           </FormField>
         </div>
       </Section>
+
+      {formError && <p className="bg-destructive/10 px-5 py-4 text-sm text-destructive">{formError}</p>}
 
       <ConfirmDialog
         open={confirmCancel}

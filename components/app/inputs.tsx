@@ -22,7 +22,8 @@ import {
   calcCommission,
   formatRupiah,
 } from "@/lib/format"
-import type { Commission, Day, OperatingHour, ReceivingSlot } from "@/lib/types"
+import type { Commission, Day, FileBrief, OperatingHour, ReceivingSlot } from "@/lib/types"
+import { api, errorMessage, validateUploadFile, type ApiClient, type UploadPurpose } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
@@ -286,60 +287,85 @@ interface UploadItem {
   preview: string | null
   progress: number
   failed: boolean
+  /** Id from `POST /uploads` (or of an existing file). */
+  fileId?: string
+  /** Kept for "Ulangi" after a failed upload. */
+  file?: File
+  /** Viewable URL (existing file or uploaded). */
+  url?: string | null
 }
 
 const ACCEPTED = ["image/jpeg", "image/png", "image/webp", "application/pdf"]
-const MAX_BYTES = 5 * 1024 * 1024
 
 /**
- * Photo/document upload: client validation (jpg/png/webp/pdf, ≤ 5 MB),
- * simulated progress, drag to reorder, first photo marked "Utama".
+ * Photo/document upload: client validation (jpg/png/webp/pdf, ≤ 5 MB) →
+ * `POST /uploads` with `purpose` → preview; emits the ordered file ids
+ * (`*_file_id(s)`). Drag to reorder; the first photo is marked "Utama".
  */
 export function FileUpload({
+  purpose,
+  client = api,
+  initial = [],
+  onChange,
   max = 5,
   accept = "image/jpeg,image/png,image/webp",
   variant = "photo",
-  initialCount = 0,
   label = "Tambah foto",
   markPrimary = true,
   onCountChange,
 }: {
+  purpose: UploadPurpose
+  /** `api` (PWA) or `adminApi` (admin uploads on behalf of an owner). */
+  client?: ApiClient
+  /** Files already attached (edit forms). */
+  initial?: FileBrief[]
+  /** Ordered ids of successfully uploaded files. */
+  onChange?: (ids: string[]) => void
   max?: number
   accept?: string
   variant?: "photo" | "document"
-  initialCount?: number
   label?: string
   markPrimary?: boolean
   onCountChange?: (count: number) => void
 }) {
   const [items, setItems] = React.useState<UploadItem[]>(() =>
-    Array.from({ length: initialCount }, (_, i) => ({
-      key: `existing-${i}`,
-      name: variant === "document" ? `dokumen-${i + 1}.pdf` : `foto-${i + 1}.jpg`,
-      preview: null,
+    initial.map((f) => ({
+      key: f.id,
+      name: f.name,
+      preview: f.url && f.mime?.startsWith("image/") ? f.url : null,
+      url: f.url,
       progress: 100,
       failed: false,
+      fileId: f.id,
     }))
   )
   const inputRef = React.useRef<HTMLInputElement>(null)
   const dragFrom = React.useRef<number | null>(null)
-  const count = items.filter((i) => !i.failed).length
+  const ready = items.filter((i) => i.fileId && !i.failed)
+  const count = ready.length
+  const idsKey = ready.map((i) => i.fileId).join(",")
 
+  const cbRef = React.useRef({ onChange, onCountChange })
   React.useEffect(() => {
-    onCountChange?.(count)
-  }, [count, onCountChange])
+    cbRef.current = { onChange, onCountChange }
+  })
+  React.useEffect(() => {
+    cbRef.current.onCountChange?.(count)
+    cbRef.current.onChange?.(idsKey ? idsKey.split(",") : [])
+  }, [count, idsKey])
 
-  const simulate = (key: string, fail = false) => {
-    let p = 0
-    const t = setInterval(() => {
-      p += 20
-      setItems((prev) =>
-        prev.map((it) =>
-          it.key === key ? { ...it, progress: Math.min(p, 100), failed: fail && p >= 60 } : it
-        )
-      )
-      if (p >= 100 || (fail && p >= 60)) clearInterval(t)
-    }, 180)
+  const patch = (key: string, p: Partial<UploadItem>) =>
+    setItems((prev) => prev.map((it) => (it.key === key ? { ...it, ...p } : it)))
+
+  const upload = async (key: string, file: File) => {
+    patch(key, { progress: 35, failed: false })
+    try {
+      const res = await client.upload(file, purpose)
+      patch(key, { progress: 100, fileId: res.id, url: res.url })
+    } catch (e) {
+      patch(key, { failed: true })
+      toast.add({ title: `${file.name}: ${errorMessage(e, "gagal mengunggah.")}`, type: "error" })
+    }
   }
 
   const onFiles = (files: FileList | null) => {
@@ -351,8 +377,9 @@ export function FileUpload({
         toast.add({ title: `${f.name}: format tidak didukung.`, type: "error" })
         continue
       }
-      if (f.size > MAX_BYTES) {
-        toast.add({ title: `${f.name}: ukuran melebihi 5 MB.`, type: "error" })
+      const invalid = validateUploadFile(f, purpose)
+      if (invalid) {
+        toast.add({ title: `${f.name}: ${invalid}`, type: "error" })
         continue
       }
       accepted.push({
@@ -361,10 +388,15 @@ export function FileUpload({
         preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
         progress: 0,
         failed: false,
+        file: f,
       })
     }
     setItems((prev) => [...prev, ...accepted])
-    accepted.forEach((a) => simulate(a.key))
+    accepted.forEach((a) => void upload(a.key, a.file!))
+  }
+
+  const retry = (it: UploadItem) => {
+    if (it.file) void upload(it.key, it.file)
   }
 
   const move = (from: number, to: number) =>
@@ -389,11 +421,16 @@ export function FileUpload({
               {it.failed && <span className="text-xs text-destructive">Gagal mengunggah</span>}
             </div>
             {it.failed ? (
-              <Button variant="ghost" size="icon-sm" aria-label="Ulangi" onClick={() => simulate(it.key)}>
+              <Button variant="ghost" size="icon-sm" aria-label="Ulangi" onClick={() => retry(it)}>
                 <IconRefresh />
               </Button>
             ) : (
-              <Button variant="ghost" size="xs" disabled={it.progress < 100}>
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={it.progress < 100 || !it.url}
+                onClick={() => it.url && window.open(it.url, "_blank", "noopener")}
+              >
                 Lihat
               </Button>
             )}
@@ -482,7 +519,7 @@ export function FileUpload({
             {it.failed && (
               <button
                 type="button"
-                onClick={() => simulate(it.key)}
+                onClick={() => retry(it)}
                 className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-destructive py-1 text-[0.625rem] font-semibold tracking-wider text-white uppercase"
               >
                 <IconRefresh className="size-3" /> Ulangi
@@ -530,9 +567,12 @@ export function FileUpload({
 export function LocationPicker({
   lat: initialLat = -7.9467,
   lng: initialLng = 112.6159,
+  onChange,
 }: {
   lat?: number
   lng?: number
+  /** Emits the pin position (rounded to 6 decimals). */
+  onChange?: (pos: { lat: number; lng: number }) => void
 }) {
   const [pos, setPos] = React.useState({ x: 0.5, y: 0.5 })
   const [center, setCenter] = React.useState({ lat: initialLat, lng: initialLng })
@@ -543,6 +583,14 @@ export function LocationPicker({
   const SPAN = 0.02
   const lat = center.lat + (0.5 - pos.y) * SPAN
   const lng = center.lng + (pos.x - 0.5) * SPAN
+
+  const onChangeRef = React.useRef(onChange)
+  React.useEffect(() => {
+    onChangeRef.current = onChange
+  })
+  React.useEffect(() => {
+    onChangeRef.current?.({ lat: Math.round(lat * 1e6) / 1e6, lng: Math.round(lng * 1e6) / 1e6 })
+  }, [lat, lng])
 
   const moveTo = (clientX: number, clientY: number) => {
     const r = boxRef.current?.getBoundingClientRect()

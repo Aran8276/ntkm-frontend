@@ -12,9 +12,14 @@ import {
   IconDotsVertical,
   IconMailDown,
   IconMapPin,
+  IconShieldCheck,
+  IconSpeakerphone,
   IconTruckDelivery,
   type Icon,
 } from "@tabler/icons-react"
+
+import { api } from "@/lib/api"
+import { handleApiError } from "@/components/app/feedback"
 
 import { cn } from "@/lib/utils"
 import {
@@ -35,7 +40,9 @@ import type {
   Opportunity,
   Product,
   Role,
+  StockMode,
   StockRow,
+  StockStatus,
 } from "@/lib/types"
 import { toast } from "@/components/ui/toast"
 import { Switch } from "@/components/ui/switch"
@@ -74,12 +81,12 @@ export function OpportunityCard({
   side: Role
   href: string
 }) {
-  const newApps = o.application_counts.submitted ?? 0
+  const newApps = o.application_counts?.submitted ?? 0
   return (
     <Link href={href} className={cn(cardBase, "group flex flex-col gap-4 p-5 hover:bg-background/70")}>
       {side === "umkm" && (
         <div className="flex items-center gap-3">
-          <Thumb kind="store" size="sm" />
+          <Thumb kind="store" size="sm" src={o.store.photo_url} />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{o.store.name}</p>
             {o.store.distance_km != null && (
@@ -152,9 +159,11 @@ function Meta({ label, value }: { label: string; value: React.ReactNode }) {
 // ---------------------------------------------------------------------------
 
 export function counterpartOf(a: Application, viewer: Role) {
+  if (a.counterpart && a.viewer_role === viewer)
+    return { name: a.counterpart.name, kind: a.counterpart.type, image: a.counterpart.image_url }
   return viewer === "store"
-    ? { name: a.umkm.business_name, kind: "umkm" as const }
-    : { name: a.store.name, kind: "store" as const }
+    ? { name: a.umkm.business_name, kind: "umkm" as const, image: a.umkm.logo_url }
+    : { name: a.store.name, kind: "store" as const, image: a.store.photo_url }
 }
 
 export function ApplicationCard({
@@ -169,14 +178,14 @@ export function ApplicationCard({
   inset?: boolean
 }) {
   const cp = counterpartOf(a, viewer)
-  const approved = a.items.filter((i) => i.decision === "approved").length
+  const approved = a.approved_count
   const decided = a.items.some((i) => i.decision !== "pending")
   return (
     <Link
       href={`/kerja-sama/${a.id}`}
       className={cn(cardBase, "flex gap-4 p-5 hover:bg-background/70", inset && insetClass)}
     >
-      <Thumb kind={cp.kind} className={cn(inset && "bg-background")} />
+      <Thumb kind={cp.kind} src={cp.image} className={cn(inset && "bg-background")} />
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex items-start justify-between gap-3">
           <p className="truncate font-medium">{cp.name}</p>
@@ -184,7 +193,7 @@ export function ApplicationCard({
         </div>
         <p className="truncate text-sm text-muted-foreground">{a.opportunity.title}</p>
         <p className="text-sm">
-          {a.items.length} produk{decided && ` · ${approved} disetujui`}
+          {a.items_count} produk{decided && ` · ${approved} disetujui`}
         </p>
         {showSlot && a.delivery_slot && ["approved", "in_delivery"].includes(a.status) && (
           <SlotLine slot={a.delivery_slot} />
@@ -211,7 +220,7 @@ export function DeliveryRow({ application: a, viewer }: { application: Applicati
   const slot = a.delivery_slot!
   const tag = upcomingDayLabel(slot.date)
   const cp = counterpartOf(a, viewer)
-  const count = a.items.filter((i) => i.decision === "approved").length
+  const count = a.approved_count
   return (
     <Link
       href={`/kerja-sama/${a.id}`}
@@ -256,7 +265,7 @@ export function ProductCard({
 }) {
   return (
     <div className={cn(cardBase, "relative flex gap-4 p-5", !p.is_active && "opacity-80")}>
-      <Thumb kind="product" size="lg" />
+      <Thumb kind="product" size="lg" src={p.photo_url} />
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex items-start gap-2 pr-8">
           <Link href={href} className="font-medium outline-none after:absolute after:inset-0 hover:underline">
@@ -272,7 +281,13 @@ export function ProductCard({
           <Meta label="Harga jual" value={formatRupiah(p.suggested_retail_price)} />
           <Meta
             label="Masa simpan"
-            value={p.shelf_life_days ? formatShelfLife(p.shelf_life_days) : formatDate(p.expiry_date!, { weekday: false })}
+            value={
+              p.shelf_life_days
+                ? formatShelfLife(p.shelf_life_days)
+                : p.expiry_date
+                  ? formatDate(p.expiry_date, { weekday: false })
+                  : "—"
+            }
           />
         </dl>
         <p className="text-xs text-muted-foreground">
@@ -310,10 +325,21 @@ export function ProductCard({
 // Stock
 // ---------------------------------------------------------------------------
 
-export function StockRowItem({ row, viewer, inset }: { row: StockRow; viewer: Role; inset?: boolean }) {
-  const editable = viewer === "store"
+export function StockRowItem({
+  row,
+  viewer,
+  inset,
+  onChanged,
+}: {
+  row: StockRow
+  viewer: Role
+  inset?: boolean
+  /** Called with the updated row after a successful stock PATCH (or with null to reload). */
+  onChanged?: (row: StockRow | null) => void
+}) {
+  const editable = viewer === "store" && row.can_update
   const out = row.stock_status === "out_of_stock"
-  const counterpart = viewer === "store" ? row.umkm.business_name : row.store.name
+  const counterpart = row.counterpart?.name ?? (viewer === "store" ? row.umkm.business_name : row.store.name)
   return (
     <div
       className={cn(
@@ -327,14 +353,18 @@ export function StockRowItem({ row, viewer, inset }: { row: StockRow; viewer: Ro
         href={`/kerja-sama/${row.application_id}`}
         className="flex min-w-0 flex-1 items-center gap-4 outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring/30"
       >
-        <Thumb kind="product" />
+        <Thumb kind="product" src={row.product.photo_url} />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <p className="truncate font-medium">{row.product.name}</p>
           <p className="truncate text-sm text-muted-foreground">{counterpart}</p>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span className="text-sm text-foreground">{formatRupiah(row.sell_price)}</span>
-            <span>·</span>
-            <span>Diperbarui {formatRelative(row.stock_updated_at)}</span>
+            {row.stock_updated_at && (
+              <>
+                <span>·</span>
+                <span>Diperbarui {formatRelative(row.stock_updated_at)}</span>
+              </>
+            )}
           </div>
           {viewer === "umkm" && out && (
             <p className="text-sm font-medium text-destructive">Hubungi toko untuk kirim ulang</p>
@@ -342,7 +372,18 @@ export function StockRowItem({ row, viewer, inset }: { row: StockRow; viewer: Ro
         </div>
       </Link>
       {editable ? (
-        <StockControl row={row} />
+        <StockControl
+          key={`${row.stock_quantity}-${row.stock_status}`}
+          applicationId={row.application_id}
+          itemId={row.item_id}
+          mode={row.stock_mode}
+          quantity={row.stock_quantity}
+          status={row.stock_status}
+          max={row.received_quantity ?? 999}
+          umkmName={row.umkm.business_name}
+          onSaved={(r) => onChanged?.(r)}
+          onConflict={() => onChanged?.(null)}
+        />
       ) : (
         <StockChip status={row.stock_status} quantity={row.stock_quantity} mode={row.stock_mode} />
       )}
@@ -350,33 +391,67 @@ export function StockRowItem({ row, viewer, inset }: { row: StockRow; viewer: Ro
   )
 }
 
-/** Store-side stock control: count stepper (autosave 1s) or Ada/Habis switch. */
-export function StockControl({ row }: { row: Pick<StockRow, "stock_mode" | "stock_quantity" | "stock_status" | "umkm"> }) {
-  const [qty, setQty] = React.useState(row.stock_quantity ?? 0)
-  const [available, setAvailable] = React.useState(row.stock_status === "available")
+/**
+ * Store-side stock control: count stepper (autosave 1 s after the last change)
+ * or Ada/Habis switch → `PATCH /applications/{id}/items/{item_id}/stock`.
+ * Marking out of stock asks for confirmation (the UMKM gets notified).
+ */
+export function StockControl({
+  applicationId,
+  itemId,
+  mode,
+  quantity,
+  status,
+  max = 999,
+  umkmName,
+  onSaved,
+  onConflict,
+}: {
+  applicationId: string
+  itemId: number
+  mode: StockMode
+  quantity: number | null
+  status: StockStatus | null
+  max?: number
+  umkmName: string
+  onSaved?: (row: StockRow) => void
+  onConflict?: () => void
+}) {
+  const [qty, setQty] = React.useState(quantity ?? 0)
+  const [available, setAvailable] = React.useState(status !== "out_of_stock")
   const [confirm, setConfirm] = React.useState<null | { revert: () => void; apply: () => void }>(null)
-  const saved = React.useRef(row.stock_quantity ?? 0)
+  const saved = React.useRef(quantity ?? 0)
   const timer = React.useRef<ReturnType<typeof setTimeout>>(undefined)
 
-  const save = () => toast.add({ title: "Stok diperbarui.", type: "success" })
+  const save = async (body: { stock_quantity: number } | { stock_status: StockStatus }, revert: () => void) => {
+    try {
+      const row = await api.patch<StockRow>(`/applications/${applicationId}/items/${itemId}/stock`, body)
+      toast.add({ title: "Stok diperbarui.", type: "success" })
+      onSaved?.(row)
+    } catch (e) {
+      revert()
+      handleApiError(e, { onReload: onConflict })
+    }
+  }
 
   const changeQty = (next: number) => {
     setQty(next)
     clearTimeout(timer.current)
     timer.current = setTimeout(() => {
-      if (next === saved.current) return
-      if (next === 0) {
-        setConfirm({
-          apply: () => {
-            saved.current = 0
-            save()
-          },
-          revert: () => setQty(saved.current),
+      const prev = saved.current
+      if (next === prev) return
+      const commit = () => {
+        saved.current = next
+        void save({ stock_quantity: next }, () => {
+          saved.current = prev
+          setQty(prev)
         })
+      }
+      if (next === 0) {
+        setConfirm({ apply: commit, revert: () => setQty(prev) })
         return
       }
-      saved.current = next
-      save()
+      commit()
     }, 1000)
   }
 
@@ -384,10 +459,10 @@ export function StockControl({ row }: { row: Pick<StockRow, "stock_mode" | "stoc
 
   return (
     <div className="flex items-center justify-between gap-4 sm:justify-end">
-      {row.stock_mode === "count" ? (
+      {mode === "count" ? (
         <>
           <StockChip status={qty === 0 ? "out_of_stock" : "available"} quantity={qty} mode="count" />
-          <NumberStepper value={qty} onChange={changeQty} min={0} max={999} label="Jumlah stok" />
+          <NumberStepper value={qty} onChange={changeQty} min={0} max={max} label="Jumlah stok" />
         </>
       ) : (
         <label className="flex items-center gap-3 text-xs font-semibold tracking-widest uppercase">
@@ -397,10 +472,13 @@ export function StockControl({ row }: { row: Pick<StockRow, "stock_mode" | "stoc
             onCheckedChange={(checked) => {
               if (!checked) {
                 setAvailable(false)
-                setConfirm({ apply: save, revert: () => setAvailable(true) })
+                setConfirm({
+                  apply: () => void save({ stock_status: "out_of_stock" }, () => setAvailable(true)),
+                  revert: () => setAvailable(true),
+                })
               } else {
                 setAvailable(true)
-                save()
+                void save({ stock_status: "available" }, () => setAvailable(false))
               }
             }}
           />
@@ -415,7 +493,7 @@ export function StockControl({ row }: { row: Pick<StockRow, "stock_mode" | "stoc
           }
         }}
         title="Tandai habis?"
-        description={`${row.umkm.business_name} akan menerima notifikasi untuk kirim ulang.`}
+        description={`${umkmName} akan menerima notifikasi untuk kirim ulang.`}
         confirmLabel="Ya, tandai habis"
         onConfirm={() => {
           confirm?.apply()
@@ -436,6 +514,10 @@ const NOTIFICATION_ICON: Record<NotificationType, { icon: Icon; className: strin
   application_rejected: { icon: IconCircleX, className: "bg-destructive/10 text-destructive" },
   application_status_changed: { icon: IconTruckDelivery, className: "bg-muted text-foreground" },
   stock_out: { icon: IconBoxOff, className: "bg-destructive/10 text-destructive" },
+  admin_action: { icon: IconShieldCheck, className: "bg-warning/15 text-foreground" },
+  announcement: { icon: IconSpeakerphone, className: "bg-primary/10 text-primary" },
+  legal_verified: { icon: IconCircleCheck, className: "bg-success/10 text-success" },
+  legal_rejected: { icon: IconCircleX, className: "bg-destructive/10 text-destructive" },
 }
 
 export function NotificationCard({
@@ -445,7 +527,7 @@ export function NotificationCard({
   notification: AppNotification
   onOpen: (n: AppNotification) => void
 }) {
-  const meta = NOTIFICATION_ICON[n.type]
+  const meta = NOTIFICATION_ICON[n.type] ?? NOTIFICATION_ICON.application_status_changed
   return (
     <button
       type="button"

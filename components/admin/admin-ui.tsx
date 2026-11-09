@@ -26,7 +26,9 @@ import type {
   VerificationStatus,
 } from "@/lib/admin-types"
 import type { Role } from "@/lib/types"
-import { AUDIT_LOGS } from "@/lib/admin-mock"
+import type { Paginated } from "@/lib/api"
+import { useApi } from "@/lib/use-api"
+import type { AuditLog } from "@/lib/admin-types"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { toast } from "@/components/ui/toast"
 import { Section } from "@/components/app/blocks"
@@ -108,8 +110,8 @@ export function OverrideMark({ label = true }: { label?: boolean }) {
   )
 }
 
-export function CreatorChip({ createdBy, kind }: { createdBy: CreatedBy; kind: "toko" | "UMKM" }) {
-  return createdBy.is_admin ? (
+export function CreatorChip({ createdBy, kind }: { createdBy: CreatedBy | null; kind: "toko" | "UMKM" }) {
+  return createdBy?.is_admin ? (
     <StatusChip tone="violet">Dibuat oleh admin</StatusChip>
   ) : (
     <StatusChip tone="neutral">Dibuat oleh {kind}</StatusChip>
@@ -230,12 +232,14 @@ export function PhoneLink({ phone }: { phone: string }) {
 }
 
 /** Before (struck, red) → after (green). */
-export function ChangeValue({ before, after }: { before: string | null; after: string | null }) {
+const show = (v: unknown) => (v == null ? "null" : typeof v === "string" ? v : JSON.stringify(v))
+
+export function ChangeValue({ before, after }: { before: unknown; after: unknown }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-2 font-mono text-xs">
-      <del className="bg-destructive/10 px-1.5 py-0.5 text-destructive">{before ?? "null"}</del>
+      <del className="bg-destructive/10 px-1.5 py-0.5 break-all text-destructive">{show(before)}</del>
       <IconArrowRight className="size-3 text-muted-foreground" />
-      <ins className="bg-success/10 px-1.5 py-0.5 text-success no-underline">{after ?? "null"}</ins>
+      <ins className="bg-success/10 px-1.5 py-0.5 break-all text-success no-underline">{show(after)}</ins>
     </span>
   )
 }
@@ -383,8 +387,10 @@ export const TARGET_LABEL: Record<TargetType, string> = {
   notification: "Notifikasi",
 }
 
+/** "Riwayat admin": `GET /admin/audit-logs?target_type=&target_id=&page_size=5`. */
 export function AdminHistoryCard({ type, id }: { type: TargetType; id: string }) {
-  const rows = AUDIT_LOGS.filter((l) => l.target_type === type && l.target_id === id).slice(0, 5)
+  const q = useApi<Paginated<AuditLog>>("admin", "/admin/audit-logs", { target_type: type, target_id: id, page_size: 5 })
+  const rows = q.data?.results ?? []
   return (
     <Section
       title="Riwayat admin"
@@ -399,13 +405,15 @@ export function AdminHistoryCard({ type, id }: { type: TargetType; id: string })
         ) : undefined
       }
     >
-      {rows.length ? (
+      {q.loading ? (
+        <p className="text-sm text-muted-foreground">Memuat…</p>
+      ) : rows.length ? (
         <ul className="-my-2 flex flex-col divide-y">
           {rows.map((l) => (
             <li key={l.id}>
               <Link href={`/admin/audit?id=${l.id}`} className="flex flex-col gap-1 py-3 outline-none hover:bg-muted/40 focus-visible:bg-muted">
                 <span className="flex items-baseline justify-between gap-3">
-                  <span className="text-sm font-medium">{AUDIT_ACTION_LABEL[l.action]}</span>
+                  <span className="text-sm font-medium">{AUDIT_ACTION_LABEL[l.action] ?? l.action}</span>
                   <span className="text-xs text-muted-foreground tabular-nums">{formatDateTime(l.created_at)}</span>
                 </span>
                 <span className="text-xs text-muted-foreground">oleh {l.admin.name}</span>

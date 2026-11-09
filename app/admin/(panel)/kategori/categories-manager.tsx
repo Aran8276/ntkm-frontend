@@ -4,8 +4,12 @@ import * as React from "react"
 import { IconCategory, IconEdit, IconGripVertical, IconPlus, IconTrash } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
-import { ADMIN_CATEGORIES, slugify } from "@/lib/admin-mock"
+import { slugify } from "@/lib/format"
+import { adminApi } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
 import type { AdminCategory } from "@/lib/admin-types"
+import { LoadError, handleApiError } from "@/components/app/feedback"
+import { TableSkeleton } from "@/components/admin/data-table"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
@@ -24,31 +28,57 @@ import { ConfirmDialog, EmptyState } from "@/components/app/blocks"
 import { FormField } from "@/components/app/form-field"
 import { AdminPage } from "@/components/admin/admin-page"
 
-/** A19 · Kategori. */
+const refresh = () => revalidate("admin", "/admin/categories")
+
+/** A19 · Kategori: `GET /admin/categories` (no pagination) + POST/PATCH/DELETE. */
 export function CategoriesManager() {
-  const [rows, setRows] = React.useState(ADMIN_CATEGORIES)
+  const q = useApi<AdminCategory[]>("admin", "/admin/categories")
+  const rows = q.data ?? []
   const [dragging, setDragging] = React.useState<string | null>(null)
   const [form, setForm] = React.useState<{ open: boolean; cat: AdminCategory | null }>({ open: false, cat: null })
   const [deactivate, setDeactivate] = React.useState<AdminCategory | null>(null)
   const [remove, setRemove] = React.useState<AdminCategory | null>(null)
 
-  const setActive = (c: AdminCategory, v: boolean) => {
-    setRows((r) => r.map((x) => (x.id === c.id ? { ...x, is_active: v } : x)))
-    toast.add({ title: v ? "Kategori diaktifkan." : "Kategori dinonaktifkan.", type: "success" })
+  const setActive = async (c: AdminCategory, v: boolean) => {
+    try {
+      await adminApi.patch(`/admin/categories/${c.id}`, { is_active: v })
+      toast.add({ title: v ? "Kategori diaktifkan." : "Kategori dinonaktifkan.", type: "success" })
+      void refresh()
+    } catch (e) {
+      handleApiError(e, { admin: true, onReload: refresh })
+    }
   }
 
-  const onDrop = (targetId: string) => {
+  /** Drag & drop → PATCH sort_order for the rows that moved. */
+  const onDrop = async (targetId: string) => {
     if (!dragging || dragging === targetId) return
-    setRows((r) => {
-      const from = r.findIndex((x) => x.id === dragging)
-      const to = r.findIndex((x) => x.id === targetId)
-      const next = [...r]
-      const [moved] = next.splice(from, 1)
-      next.splice(to, 0, moved)
-      return next.map((x, i) => ({ ...x, sort_order: (i + 1) * 10 }))
-    })
+    const from = rows.findIndex((x) => x.id === dragging)
+    const to = rows.findIndex((x) => x.id === targetId)
+    const next = [...rows]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    const reordered = next.map((x, i) => ({ ...x, sort_order: (i + 1) * 10 }))
     setDragging(null)
-    toast.add({ title: "Urutan disimpan.", type: "success" })
+    q.mutate(reordered)
+    try {
+      const changed = reordered.filter((x) => rows.find((r) => r.id === x.id)?.sort_order !== x.sort_order)
+      await Promise.all(changed.map((x) => adminApi.patch(`/admin/categories/${x.id}`, { sort_order: x.sort_order })))
+      toast.add({ title: "Urutan disimpan.", type: "success" })
+    } catch (e) {
+      handleApiError(e, { admin: true })
+    } finally {
+      void refresh()
+    }
+  }
+
+  const doRemove = async (c: AdminCategory) => {
+    try {
+      await adminApi.del(`/admin/categories/${c.id}`)
+      toast.add({ title: "Kategori dihapus.", type: "success" })
+      void refresh()
+    } catch (e) {
+      handleApiError(e, { admin: true, onReload: refresh })
+    }
   }
 
   const add = (
@@ -59,7 +89,11 @@ export function CategoriesManager() {
 
   return (
     <AdminPage title="Kategori" description="Kategori produk dan peluang. Seret baris untuk mengubah urutan." actions={add}>
-      {rows.length === 0 ? (
+      {q.error && !q.data ? (
+        <LoadError error={q.error} onRetry={q.reload} backHref="/admin" backLabel="Kembali ke Dashboard" />
+      ) : q.loading ? (
+        <TableSkeleton />
+      ) : rows.length === 0 ? (
         <EmptyState icon={IconCategory} action={add}>
           Belum ada kategori. Tambahkan kategori agar UMKM bisa mengisi produk.
         </EmptyState>
@@ -145,7 +179,7 @@ export function CategoriesManager() {
         title={`Nonaktifkan ${deactivate?.name ?? ""}?`}
         description="Kategori tidak bisa dipilih untuk produk/peluang baru. Data lama tetap."
         confirmLabel="Nonaktifkan"
-        onConfirm={() => deactivate && setActive(deactivate, false)}
+        onConfirm={() => deactivate && void setActive(deactivate, false)}
       />
       <ConfirmDialog
         open={!!remove}
@@ -154,10 +188,7 @@ export function CategoriesManager() {
         description="Kategori belum dipakai produk atau peluang mana pun."
         confirmLabel="Hapus"
         destructive
-        onConfirm={() => {
-          setRows((r) => r.filter((x) => x.id !== remove?.id))
-          toast.add({ title: "Kategori dihapus.", type: "success" })
-        }}
+        onConfirm={() => remove && void doRemove(remove)}
       />
     </AdminPage>
   )
@@ -193,7 +224,7 @@ function CategoryFormModal({
     }
   }
 
-  const submit = () => {
+  const submit = async () => {
     const e: Record<string, string> = {}
     if (!name.trim()) e.name = "Nama wajib diisi."
     else if (existing.some((c) => c.id !== category?.id && c.name.toLowerCase() === name.trim().toLowerCase())) e.name = "Nama kategori sudah dipakai."
@@ -201,11 +232,29 @@ function CategoryFormModal({
     setErrors(e)
     if (Object.keys(e).length) return
     setBusy(true)
-    setTimeout(() => {
+    try {
+      if (category) await adminApi.patch(`/admin/categories/${category.id}`, { name: name.trim(), slug, is_active: active })
+      else
+        await adminApi.post("/admin/categories", {
+          name: name.trim(),
+          slug,
+          is_active: active,
+          sort_order: Math.max(0, ...existing.map((c) => c.sort_order)) + 10,
+        })
       setBusy(false)
       onOpenChange(false)
       toast.add({ title: category ? "Kategori diubah." : "Kategori ditambahkan.", type: "success" })
-    }, 600)
+      void refresh()
+    } catch (err) {
+      setBusy(false)
+      handleApiError(err, {
+        admin: true,
+        onFieldErrors: (fields) => {
+          setErrors({ name: fields.name, slug: fields.slug, ...(!fields.name && !fields.slug ? { name: Object.values(fields)[0] } : {}) })
+          return true
+        },
+      })
+    }
   }
 
   return (
@@ -220,7 +269,7 @@ function CategoryFormModal({
           className="flex flex-col gap-6"
           onSubmit={(e) => {
             e.preventDefault()
-            submit()
+            void submit()
           }}
         >
           <FormField label="Nama" htmlFor="cat-name" required error={errors.name}>

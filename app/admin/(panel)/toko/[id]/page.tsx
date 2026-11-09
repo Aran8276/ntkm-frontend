@@ -1,26 +1,18 @@
 import { Suspense } from "react"
-import { notFound, redirect } from "next/navigation"
+import type { Metadata } from "next"
 
 import { PageSkeleton } from "@/components/app/blocks"
-import { ADMIN_STORES, findStore } from "@/lib/admin-mock"
+import { ProfileShortcut } from "@/components/admin/profile-admin-form"
 
-export function generateStaticParams() {
-  return ADMIN_STORES.map((s) => ({ id: s.id }))
-}
+export const metadata: Metadata = { title: "Profil toko" }
 
-/** Shortcut: /admin/toko/:id → owner's A04 "Profil toko" tab. */
+// `params` is runtime data under Cache Components, so read it inside <Suspense>.
 export default function StoreShortcut({ params }: PageProps<"/admin/toko/[id]">) {
   return (
     <Suspense fallback={<PageSkeleton />}>
-      <Go params={params} />
+      {params.then(({ id }) => (
+        <ProfileShortcut kind="store" id={id} />
+      ))}
     </Suspense>
   )
-}
-
-async function Go({ params }: Pick<PageProps<"/admin/toko/[id]">, "params">) {
-  const { id } = await params
-  const s = findStore(id)
-  if (!s) notFound()
-  redirect(`/admin/pengguna/${s.owner.id}?tab=toko`)
-  return null
 }

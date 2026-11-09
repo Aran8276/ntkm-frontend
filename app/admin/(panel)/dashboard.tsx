@@ -12,10 +12,13 @@ import {
 } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
-import { formatDateTime, formatRelative } from "@/lib/format"
-import { DASHBOARD, TODAY } from "@/lib/admin-mock"
+import { addDaysIso, formatDateTime, formatRelative, todayIso } from "@/lib/format"
+import { useApi } from "@/lib/use-api"
 import type { ApplicationStatus } from "@/lib/types"
-import type { ActivityItem } from "@/lib/admin-types"
+import type { ActivityItem, Dashboard as DashboardData } from "@/lib/admin-types"
+import { Skeleton } from "@/components/ui/skeleton"
+import { LoadError } from "@/components/app/feedback"
+import { useAdmin } from "@/components/admin/admin-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
@@ -35,6 +38,13 @@ const PERIODS: { value: Period; label: string }[] = [
 ]
 
 const FLOW: ApplicationStatus[] = ["submitted", "approved", "in_delivery", "received", "completed"]
+const TARGET_HREF: Record<string, string> = {
+  application: "/admin/pengajuan/",
+  user: "/admin/pengguna/",
+  opportunity: "/admin/peluang/",
+  product: "/admin/produk/",
+}
+
 const ACTIVITY_ICON: Record<ActivityItem["kind"], Icon> = {
   application: IconInbox,
   user: IconUser,
@@ -42,25 +52,53 @@ const ACTIVITY_ICON: Record<ActivityItem["kind"], Icon> = {
   product: IconBox,
 }
 
-/** A02 · Dashboard. */
+/** A02 · Dashboard: `GET /admin/dashboard?from=&to=`. */
 export function Dashboard() {
+  const [TODAY] = React.useState(() => todayIso())
   const [period, setPeriod] = useQueryState<Period>("periode", "30")
-  const [from, setFrom] = useQueryState<string>("from", "2026-10-05")
+  const [from, setFrom] = useQueryState<string>("from", addDaysIso(-30, new Date(`${TODAY}T12:00:00+07:00`)))
   const [to, setTo] = useQueryState<string>("to", TODAY)
   const [refreshing, setRefreshing] = React.useState(false)
-  const d = DASHBOARD
+  const { refreshBadges } = useAdmin()
+
+  const range =
+    period === "7"
+      ? { from: addDaysIso(-7, new Date(`${TODAY}T12:00:00+07:00`)) }
+      : period === "pilot"
+        ? { from: "2020-01-01" }
+        : period === "custom"
+          ? { from, to }
+          : {}
+  const q = useApi<DashboardData>("admin", "/admin/dashboard", range)
+
+  const refresh = async () => {
+    setRefreshing(true)
+    await q.reload()
+    refreshBadges()
+    setRefreshing(false)
+    toast.add({ title: "Data diperbarui.", type: "success" })
+  }
+
+  if (!q.data)
+    return (
+      <AdminPage title="Dashboard">
+        {q.error ? (
+          <LoadError error={q.error} onRetry={q.reload} />
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 bg-background" />
+            ))}
+          </div>
+        )}
+      </AdminPage>
+    )
+
+  const d = q.data
   const a = d.attention
   const by = d.applications.by_status
-  const max = Math.max(1, ...Object.values(by))
-  const hasActivity = Object.values(by).some((n) => n > 0)
-
-  const refresh = () => {
-    setRefreshing(true)
-    setTimeout(() => {
-      setRefreshing(false)
-      toast.add({ title: "Data diperbarui.", type: "success" })
-    }, 700)
-  }
+  const max = Math.max(1, ...Object.values(by).map((n) => n ?? 0))
+  const hasActivity = Object.values(by).some((n) => (n ?? 0) > 0)
 
   return (
     <AdminPage
@@ -68,7 +106,7 @@ export function Dashboard() {
       description={
         <span className="inline-flex items-center gap-2">
           Diperbarui {formatDateTime(d.updated_at)}
-          <Button variant="ghost" size="icon-xs" onClick={refresh} aria-label="Muat ulang" disabled={refreshing}>
+          <Button variant="ghost" size="icon-xs" onClick={() => void refresh()} aria-label="Muat ulang" disabled={refreshing}>
             {refreshing ? <Spinner /> : <IconRefresh />}
           </Button>
         </span>
@@ -155,17 +193,24 @@ export function Dashboard() {
             <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_12rem]">
               <div className="flex flex-col gap-1">
                 {FLOW.map((s) => (
-                  <FunnelBar key={s} status={s} value={by[s]} max={max} />
+                  <FunnelBar key={s} status={s} value={by[s] ?? 0} max={max} />
                 ))}
                 <div className="my-2 border-t border-dashed" />
                 {(["rejected", "cancelled"] as const).map((s) => (
-                  <FunnelBar key={s} status={s} value={by[s]} max={max} muted />
+                  <FunnelBar key={s} status={s} value={by[s] ?? 0} max={max} muted />
                 ))}
               </div>
               <dl className="grid grid-cols-3 gap-4 lg:grid-cols-1 lg:content-start lg:border-l lg:pl-8">
                 <Metric label="Pengajuan baru" value={String(d.applications.created_in_period)} hint="dalam periode" />
-                <Metric label="Tingkat persetujuan" value={`${d.applications.approval_rate}%`} />
-                <Metric label="Median waktu tinjau" value={`${String(d.applications.median_hours_to_review).replace(".", ",")} jam`} />
+                <Metric label="Tingkat persetujuan" value={d.applications.approval_rate == null ? "—" : `${d.applications.approval_rate}%`} />
+                <Metric
+                  label="Median waktu tinjau"
+                  value={
+                    d.applications.median_hours_to_review == null
+                      ? "—"
+                      : `${String(Math.round(d.applications.median_hours_to_review * 10) / 10).replace(".", ",")} jam`
+                  }
+                />
               </dl>
             </div>
           ) : (
@@ -176,11 +221,12 @@ export function Dashboard() {
         <Section title="Aktivitas terbaru">
           {d.recent_activity.length ? (
             <ul className="-my-2 flex flex-col divide-y">
-              {d.recent_activity.map((item) => {
-                const Ico = ACTIVITY_ICON[item.kind]
+              {d.recent_activity.map((item, i) => {
+                const Ico = ACTIVITY_ICON[item.kind] ?? IconInbox
+                const href = TARGET_HREF[item.target.type] ? `${TARGET_HREF[item.target.type]}${item.target.id}` : "/admin"
                 return (
-                  <li key={item.id}>
-                    <Link href={item.href} className="flex items-start gap-3 py-3 outline-none hover:bg-muted/40 focus-visible:bg-muted">
+                  <li key={`${item.target.id}-${item.created_at}-${i}`}>
+                    <Link href={href} className="flex items-start gap-3 py-3 outline-none hover:bg-muted/40 focus-visible:bg-muted">
                       <span className="flex size-8 shrink-0 items-center justify-center bg-muted">
                         <Ico className="size-4" stroke={1.75} />
                       </span>

@@ -5,7 +5,10 @@ import Link from "next/link"
 import { IconArchive, IconEdit, IconPhoto, IconRestore, IconTrash, IconRefresh } from "@tabler/icons-react"
 
 import { formatDateTime, formatRupiah } from "@/lib/format"
-import { findProduct } from "@/lib/admin-mock"
+import { useApi } from "@/lib/use-api"
+import type { AdminProduct } from "@/lib/admin-types"
+import { LoadError } from "@/components/app/feedback"
+import { TableSkeleton } from "@/components/admin/data-table"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Section } from "@/components/app/blocks"
@@ -28,23 +31,22 @@ import { DocumentViewer } from "@/components/admin/pickers"
 import { useProductActions } from "@/components/admin/product-actions"
 import { shelfLabel } from "../products-table"
 
-/** A13 · Detail produk. */
+/** A13 · Detail produk: `GET /admin/products/{id}`. */
 export function ProductDetail({ id }: { id: string }) {
-  const p = findProduct(id)!
+  const q = useApi<AdminProduct>("admin", `/admin/products/${id}`)
   const { isSuperadmin } = useAdmin()
   const { open, modals } = useProductActions()
   const [viewer, setViewer] = React.useState<number | null>(null)
-  const photos = Array.from({ length: p.photo_count }, (_, i) => ({
-    id: `${p.id}-${i}`,
-    purpose: "product_photo" as const,
-    name: `foto-${i + 1}.jpg`,
-    mime: "image/jpeg",
-    size_kb: 640,
-    owner: { id: "", name: "", email: "" },
-    used_in: [],
-    is_removed: false,
-    created_at: p.created_at,
-  }))
+
+  const p = q.data
+  if (!p)
+    return (
+      <AdminPage breadcrumb={[{ label: "Produk", href: "/admin/produk" }]} title="Detail produk">
+        {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref="/admin/produk" backLabel="Kembali ke Produk" /> : <TableSkeleton />}
+      </AdminPage>
+    )
+  const photos = p.photos
+  const history = p.applications ?? []
 
   return (
     <AdminPage
@@ -64,7 +66,7 @@ export function ProductDetail({ id }: { id: string }) {
     >
       {p.deleted_at && (
         <Banner action={<Button size="sm" variant="outline" onClick={() => open("restore", p)}>Pulihkan</Button>}>
-          Data ini dihapus pada {formatDateTime(p.deleted_at)} oleh {p.deleted_by}.
+          Data ini dihapus pada {formatDateTime(p.deleted_at)} oleh {p.deleted_by?.name ?? "—"}.
         </Banner>
       )}
       <DetailColumns
@@ -80,14 +82,19 @@ export function ProductDetail({ id }: { id: string }) {
                       className="relative flex aspect-square items-center justify-center bg-muted text-muted-foreground outline-none hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-ring/30"
                       aria-label={`Buka foto ${i + 1}`}
                     >
-                      <IconPhoto className="size-7" stroke={1.25} />
+                      {ph.url ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- uploaded file served by the API
+                        <img src={ph.url} alt="" className="size-full object-cover" />
+                      ) : (
+                        <IconPhoto className="size-7" stroke={1.25} />
+                      )}
                       {i === 0 && (
                         <span className="absolute top-1.5 left-1.5 bg-foreground px-1.5 py-0.5 text-[0.5625rem] font-semibold tracking-widest text-background uppercase">
                           Utama
                         </span>
                       )}
                     </button>
-                    <Button variant="ghost" size="xs" className="text-destructive" onClick={() => open("remove_photo", p)}>
+                    <Button variant="ghost" size="xs" className="text-destructive" onClick={() => open("remove_photo", p, ph.id)}>
                       Hapus foto
                     </Button>
                   </li>
@@ -120,12 +127,12 @@ export function ProductDetail({ id }: { id: string }) {
             </Section>
             <Section title="Riwayat pengajuan">
               <MiniTable
-                rows={p.applications}
-                rowKey={(a) => a.id}
-                rowHref={(a) => `/admin/pengajuan/${a.id}`}
+                rows={history}
+                rowKey={(a) => `${a.application_id}-${a.item_id}`}
+                rowHref={(a) => `/admin/pengajuan/${a.application_id}`}
                 empty="Produk ini belum pernah diajukan."
                 columns={[
-                  { header: "Toko", cell: (a) => a.store },
+                  { header: "Toko", cell: (a) => a.store.name },
                   { header: "Status pengajuan", cell: (a) => <ApplicationStatusChip status={a.status} /> },
                   { header: "Keputusan", cell: (a) => <DecisionChip decision={a.decision} /> },
                   { header: "Harga jual", cell: (a) => (a.sell_price ? formatRupiah(a.sell_price) : "—") },
@@ -163,7 +170,7 @@ export function ProductDetail({ id }: { id: string }) {
                     <IconTrash data-icon="inline-start" /> Hapus
                   </Button>
                 )}
-                {isSuperadmin && p.applications.length === 0 && (
+                {isSuperadmin && !p.has_applications && (
                   <Button variant="destructive" onClick={() => open("hard_delete", p)}>
                     <IconTrash data-icon="inline-start" /> Hapus permanen
                   </Button>
@@ -175,7 +182,7 @@ export function ProductDetail({ id }: { id: string }) {
                 columns={1}
                 items={[
                   { label: "ID", value: <IdCell id={p.id} /> },
-                  { label: "Dibuat oleh", value: p.created_by.name },
+                  { label: "Dibuat oleh", value: p.created_by?.name },
                   { label: "Dibuat", value: <DateTime value={p.created_at} /> },
                   { label: "Diperbarui", value: <DateTime value={p.updated_at} /> },
                 ]}

@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Django API (its virtualenv ships vendored JS).
+    "backend/**",
   ]),
 ]);
 

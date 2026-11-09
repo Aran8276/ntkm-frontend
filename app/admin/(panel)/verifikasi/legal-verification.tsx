@@ -6,8 +6,12 @@ import { IconShieldCheck } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
 import { formatDateTime, formatRelative } from "@/lib/format"
-import { ADMIN_UMKMS, NOW_ISO } from "@/lib/admin-mock"
-import type { AdminUmkm, LegalKind, VerificationStatus } from "@/lib/admin-types"
+import { adminApi, type Paginated } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { AdminUmkm, LegalKind, LegalQueueItem } from "@/lib/admin-types"
+import { LoadError, handleApiError } from "@/components/app/feedback"
+import { useAdmin } from "@/components/admin/admin-context"
+import { TableSkeleton } from "@/components/admin/data-table"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
@@ -29,24 +33,34 @@ const KINDS: { key: LegalKind; label: string; field: keyof AdminUmkm["legal"] }[
   { key: "halal", label: "Halal", field: "halal_number" },
 ]
 
-const kindsWith = (u: AdminUmkm, s: VerificationStatus) => KINDS.filter((k) => u.legal_verification[k.key].status === s)
+const KIND_LABEL: Record<LegalKind, string> = { nib: "NIB", pirt: "PIRT", halal: "Halal" }
 
 function waitingLabel(since: string | null) {
   if (!since) return null
-  const days = Math.floor((new Date(NOW_ISO).getTime() - new Date(since).getTime()) / 86_400_000)
+  const days = Math.floor((Date.now() - new Date(since).getTime()) / 86_400_000)
   return days >= 1 ? `Menunggu ${days} hari` : `Menunggu sejak ${formatRelative(since)}`
 }
 
-/** A18 · Verifikasi legalitas. */
+/** A18 · Verifikasi legalitas: queue `GET /admin/legal-verifications?status=`, detail `GET /admin/umkms/{id}`. */
 export function LegalVerification() {
   const { get, set } = useUrlParams()
+  const { refreshBadges } = useAdmin()
   const tab = (get("status") as Tab | null) ?? "pending"
-  const list = ADMIN_UMKMS.filter((u) => !u.deleted_at && kindsWith(u, tab).length > 0).sort((a, b) =>
-    (a.waiting_since ?? a.updated_at).localeCompare(b.waiting_since ?? b.updated_at)
-  )
-  const selectedId = get("umkm") ?? list[0]?.id ?? null
-  const selected = ADMIN_UMKMS.find((u) => u.id === selectedId)
-  const pendingCount = ADMIN_UMKMS.filter((u) => !u.deleted_at && kindsWith(u, "pending").length > 0).length
+  const listQ = useApi<Paginated<LegalQueueItem>>("admin", "/admin/legal-verifications", { status: tab, page_size: 100 })
+  const pendingQ = useApi<Paginated<LegalQueueItem>>("admin", "/admin/legal-verifications", { status: "pending", page_size: 1 })
+  const list = listQ.data?.results ?? []
+  const selectedId = get("umkm") ?? list[0]?.umkm.id ?? null
+  // The right panel loads even when ?umkm= is not in the active tab.
+  const selectedQ = useApi<AdminUmkm>("admin", selectedId ? `/admin/umkms/${selectedId}` : null)
+  const selected = selectedQ.data?.id === selectedId ? selectedQ.data : undefined
+  const pendingCount = pendingQ.data?.count ?? 0
+
+  if (listQ.error && !listQ.data)
+    return (
+      <AdminPage title="Verifikasi legalitas">
+        <LoadError error={listQ.error} onRetry={listQ.reload} backHref="/admin" backLabel="Kembali ke Dashboard" />
+      </AdminPage>
+    )
 
   return (
     <AdminPage title="Verifikasi legalitas" description="Putuskan NIB, PIRT, dan sertifikat halal yang menunggu.">
@@ -59,7 +73,9 @@ export function LegalVerification() {
           { value: "rejected", label: "Ditolak" },
         ]}
       />
-      {!list.length && !selected ? (
+      {listQ.loading ? (
+        <TableSkeleton />
+      ) : !list.length && !selectedId ? (
         <EmptyState icon={IconShieldCheck}>
           {tab === "pending" ? "Tidak ada legalitas yang menunggu verifikasi." : "Belum ada data di tab ini."}
         </EmptyState>
@@ -67,7 +83,8 @@ export function LegalVerification() {
         <div className="grid items-start gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
           <ul className="flex flex-col bg-background shadow-sm ring-1 ring-foreground/5 lg:sticky lg:top-24">
             {list.length ? (
-              list.map((u) => {
+              list.map((row) => {
+                const u = row.umkm
                 const active = u.id === selectedId
                 return (
                   <li key={u.id} className="border-b last:border-0">
@@ -84,8 +101,8 @@ export function LegalVerification() {
                       <span className="text-sm font-medium">{u.business_name}</span>
                       <span className="text-xs text-muted-foreground">{u.owner_name}</span>
                       <span className="flex flex-wrap items-center gap-2">
-                        <VerificationChip status={tab}>{kindsWith(u, tab).map((k) => k.label).join(" · ")}</VerificationChip>
-                        {tab === "pending" && <span className="text-xs text-muted-foreground">{waitingLabel(u.waiting_since)}</span>}
+                        <VerificationChip status={tab}>{row.kinds.map((k) => KIND_LABEL[k]).join(" · ")}</VerificationChip>
+                        {tab === "pending" && <span className="text-xs text-muted-foreground">{waitingLabel(row.waiting_since)}</span>}
                       </span>
                     </button>
                   </li>
@@ -97,10 +114,23 @@ export function LegalVerification() {
               </li>
             )}
           </ul>
-          {selected && <DecisionPanel key={selected.id} umkm={selected} onSaved={() => {
-            const next = list.find((u) => u.id !== selected.id)
-            set({ umkm: next?.id ?? null })
-          }} />}
+          {selected ? (
+            <DecisionPanel
+              key={`${selected.id}-${selected.updated_at}`}
+              umkm={selected}
+              onSaved={() => {
+                // Reload the queue and select the next UMKM automatically.
+                const next = list.find((r) => r.umkm.id !== selected.id)
+                void revalidate("admin", "/admin/legal-verifications", "/admin/umkms", "/admin/audit-logs")
+                refreshBadges()
+                set({ umkm: next?.umkm.id ?? null })
+              }}
+            />
+          ) : selectedQ.error ? (
+            <LoadError error={selectedQ.error} onRetry={selectedQ.reload} />
+          ) : selectedId ? (
+            <TableSkeleton />
+          ) : null}
         </div>
       )}
     </AdminPage>
@@ -116,14 +146,24 @@ function DecisionPanel({ umkm: u, onSaved }: { umkm: AdminUmkm; onSaved: () => v
   const anyDecision = Object.values(decisions).some((d) => d !== "keep")
   const missingNote = KINDS.some((k) => decisions[k.key] === "reject" && !notes[k.key].trim())
 
-  const save = () => {
+  const save = async () => {
     if (!anyDecision || missingNote) return
     setSaving(true)
-    setTimeout(() => {
+    // Only the kinds that were decided are sent.
+    const body: Record<string, unknown> = { notify_user: notify }
+    for (const k of KINDS) {
+      const d = decisions[k.key]
+      if (d !== "keep") body[k.key] = { status: d === "verify" ? "verified" : "rejected", note: notes[k.key].trim() }
+    }
+    try {
+      await adminApi.post(`/admin/umkms/${u.id}/legal-verification`, body)
       setSaving(false)
       toast.add({ title: "Keputusan legalitas disimpan.", type: "success" })
       onSaved()
-    }, 700)
+    } catch (e) {
+      setSaving(false)
+      handleApiError(e, { admin: true })
+    }
   }
 
   return (
@@ -179,7 +219,8 @@ function DecisionPanel({ umkm: u, onSaved }: { umkm: AdminUmkm; onSaved: () => v
                   {v.decided_by && (
                     <span className="text-xs text-muted-foreground">
                       {v.note ? `“${v.note}” · ` : ""}
-                      {v.decided_by}, {formatDateTime(v.decided_at!)}
+                      {v.decided_by.name}
+                      {v.decided_at ? `, ${formatDateTime(v.decided_at)}` : ""}
                     </span>
                   )}
                 </div>
@@ -235,7 +276,7 @@ function DecisionPanel({ umkm: u, onSaved }: { umkm: AdminUmkm; onSaved: () => v
             <Checkbox checked={notify} onCheckedChange={(v) => setNotify(!!v)} />
             <span className="text-sm font-normal tracking-normal">Beri tahu UMKM</span>
           </Label>
-          <Button data-save disabled={!anyDecision || missingNote || saving} onClick={save}>
+          <Button data-save disabled={!anyDecision || missingNote || saving} onClick={() => void save()}>
             {saving && <Spinner data-icon="inline-start" />}
             Simpan keputusan
           </Button>

@@ -29,11 +29,11 @@ import {
 
 import { cn } from "@/lib/utils"
 import { formatCount } from "@/lib/format"
-import { BADGES } from "@/lib/admin-mock"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Logo } from "@/components/app/logo"
+import { Skeleton } from "@/components/ui/skeleton"
 import { AdminProvider, useAdmin } from "@/components/admin/admin-context"
 
 interface NavItem {
@@ -41,7 +41,7 @@ interface NavItem {
   label: string
   icon: Icon
   exact?: boolean
-  badge?: number
+  badge?: "legal" | "applications" | "notifications"
   superadminOnly?: boolean
 }
 
@@ -53,7 +53,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { href: "/admin/pengguna", label: "Pengguna", icon: IconUsers },
       { href: "/admin/toko", label: "Toko", icon: IconBuildingStore },
       { href: "/admin/umkm", label: "UMKM", icon: IconPlant2 },
-      { href: "/admin/verifikasi", label: "Verifikasi legalitas", icon: IconShieldCheck, badge: BADGES.legal },
+      { href: "/admin/verifikasi", label: "Verifikasi legalitas", icon: IconShieldCheck, badge: "legal" },
     ],
   },
   {
@@ -61,7 +61,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/admin/peluang", label: "Peluang", icon: IconTargetArrow },
       { href: "/admin/produk", label: "Produk", icon: IconBox },
-      { href: "/admin/pengajuan", label: "Pengajuan", icon: IconInbox, badge: BADGES.applications },
+      { href: "/admin/pengajuan", label: "Pengajuan", icon: IconInbox, badge: "applications" },
       { href: "/admin/stok", label: "Stok", icon: IconPackage },
     ],
   },
@@ -70,7 +70,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/admin/kategori", label: "Kategori", icon: IconCategory },
       { href: "/admin/file", label: "File", icon: IconFiles },
-      { href: "/admin/notifikasi", label: "Notifikasi", icon: IconBell, badge: BADGES.notifications },
+      { href: "/admin/notifikasi", label: "Notifikasi", icon: IconBell, badge: "notifications" },
       { href: "/admin/audit", label: "Audit log", icon: IconHistory },
       { href: "/admin/ekspor", label: "Ekspor", icon: IconDownload },
       { href: "/admin/admin", label: "Admin & akses", icon: IconShieldLock, superadminOnly: true },
@@ -89,9 +89,25 @@ const MobileNavContext = React.createContext<() => void>(() => {})
 /** Client wrapper for every /admin page except A01: sidebar, banners, idle logout. */
 export function AdminShell({ children }: { children: React.ReactNode }) {
   return (
-    <AdminProvider>
+    <AdminProvider fallback={<ShellSkeleton />}>
       <ShellFrame>{children}</ShellFrame>
     </AdminProvider>
+  )
+}
+
+function ShellSkeleton() {
+  return (
+    <div className="flex min-h-svh flex-1 bg-muted" aria-busy>
+      <div className="hidden w-60 border-r bg-background lg:block" />
+      <div className="flex flex-1 flex-col">
+        <div className="h-16 border-b bg-background" />
+        <div className="flex flex-col gap-4 p-8">
+          <Skeleton className="h-6 w-48 bg-background" />
+          <Skeleton className="h-32 w-full bg-background" />
+          <Skeleton className="h-64 w-full bg-background" />
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -210,14 +226,16 @@ function NavLink({
   active: boolean
   onNavigate?: () => void
 }) {
-  const badge = item.badge ? (
+  const { badges } = useAdmin()
+  const count = item.badge ? badges[item.badge] : 0
+  const badge = count ? (
     <span
       className={cn(
         "flex h-4 min-w-4 items-center justify-center bg-destructive px-1 text-[0.625rem] leading-none font-semibold text-white",
         collapsed && "absolute top-1 right-1"
       )}
     >
-      {formatCount(item.badge)}
+      {formatCount(count)}
     </span>
   ) : null
 
@@ -279,6 +297,7 @@ const WARNING_MS = 60 * 1000
 /** Logs out after 30 minutes without clicks/typing, with a 60-second warning. */
 function IdleGuard() {
   const router = useRouter()
+  const { logout } = useAdmin()
   const lastActive = React.useRef(0)
   const [remaining, setRemaining] = React.useState<number | null>(null)
 
@@ -294,7 +313,7 @@ function IdleGuard() {
       const left = IDLE_MS - (Date.now() - lastActive.current)
       if (left <= 0) {
         window.clearInterval(t)
-        router.push("/admin/masuk?reason=idle")
+        void logout().then(() => router.push("/admin/masuk?reason=idle"))
       } else setRemaining(left <= WARNING_MS ? Math.ceil(left / 1000) : null)
     }, 1000)
     return () => {
@@ -302,7 +321,7 @@ function IdleGuard() {
       window.removeEventListener("pointerdown", bump)
       window.removeEventListener("keydown", bump)
     }
-  }, [router])
+  }, [router, logout])
 
   if (remaining == null) return null
   return (

@@ -7,8 +7,11 @@ import { IconAlertTriangle, IconCalendarEvent, IconEdit, IconShieldCheck, IconTr
 
 import { cn } from "@/lib/utils"
 import { calcCommission, formatCommission, formatDateTime, formatRupiah } from "@/lib/format"
-import { TRANSITION_EFFECT, findApplication } from "@/lib/admin-mock"
+import { adminApi } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
 import type { AdminApplication } from "@/lib/admin-types"
+import { LoadError, handleApiError } from "@/components/app/feedback"
+import { TableSkeleton } from "@/components/admin/data-table"
 import type { ApplicationItem, ApplicationStatus, StockMode } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -37,13 +40,44 @@ import { slotLabel } from "@/components/admin/embedded"
 import { RiskyActionModal } from "@/components/admin/risky-action"
 import { StockCorrectionModal, type StockTarget } from "@/components/admin/stock-correction"
 import { AdminReviewForm } from "./admin-review-form"
-import { upcomingSlots } from "./slot-options"
+import { parseSlot, upcomingSlots } from "./slot-options"
 
 type Modal = "slot" | "notes" | "stock_mode" | "hard_delete" | null
 
-/** A16 · Detail pengajuan. */
+/** Effect text shown when picking a forced transition (spec A16). */
+const TRANSITION_EFFECT: Partial<Record<`${ApplicationStatus}>${ApplicationStatus}`, string>> = {
+  "submitted>cancelled": "Pengajuan dibatalkan.",
+  "approved>submitted": "Persetujuan dibatalkan; semua keputusan produk dan slot antar dikosongkan; kuota peluang dikembalikan 1.",
+  "approved>cancelled": "Pengajuan dibatalkan; kuota peluang dikembalikan 1.",
+  "in_delivery>approved": "UMKM dianggap belum berangkat; slot tetap.",
+  "in_delivery>received": "Barang dianggap sudah diterima; isi jumlah diterima per produk.",
+  "in_delivery>cancelled": "Pengajuan dibatalkan; kuota peluang dikembalikan 1.",
+  "received>in_delivery": "Konfirmasi terima dibatalkan; jumlah diterima dan stok dikosongkan.",
+  "received>completed": "Kerja sama diselesaikan.",
+  "received>cancelled": "Barang ditarik; stok jadi habis tanpa notifikasi stok habis; kuota dikembalikan 1.",
+  "rejected>submitted": "Peninjauan dibuka ulang; keputusan dan alasan tolak dikosongkan.",
+  "cancelled>submitted": "Pengajuan dibuka ulang; keputusan dikosongkan.",
+  "completed>received": "Kerja sama dibuka kembali; stok bisa diubah lagi.",
+}
+
+const ACTOR_LABEL: Record<string, string> = { store: "Toko", umkm: "UMKM", admin: "Admin" }
+
+/** Every action ends with a reload of `GET /admin/applications/{id}` (+ lists, badges). */
+const refreshAll = () => revalidate("admin", "/admin/applications", "/admin/stock", "/admin/opportunities", "/admin/audit-logs", "/admin/dashboard")
+
+/** A16 · Detail pengajuan: `GET /admin/applications/{id}`. */
 export function ApplicationAdminDetail({ id }: { id: string }) {
-  const a = findApplication(id)!
+  const q = useApi<AdminApplication>("admin", `/admin/applications/${id}`)
+  if (!q.data)
+    return (
+      <AdminPage breadcrumb={[{ label: "Pengajuan", href: "/admin/pengajuan" }]} title="Detail pengajuan">
+        {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref="/admin/pengajuan" backLabel="Kembali ke Pengajuan" /> : <TableSkeleton />}
+      </AdminPage>
+    )
+  return <DetailView a={q.data} />
+}
+
+function DetailView({ a }: { a: AdminApplication }) {
   const { isSuperadmin } = useAdmin()
   const router = useRouter()
   const [modal, setModal] = React.useState<Modal>(null)
@@ -76,6 +110,7 @@ export function ApplicationAdminDetail({ id }: { id: string }) {
                     href={`/admin/pengguna/${a.store.owner_id}?tab=toko`}
                     phone={a.store.phone}
                     kind="store"
+                    image={a.store.photo_url}
                   />
                   <PartyCard
                     label="UMKM"
@@ -83,7 +118,8 @@ export function ApplicationAdminDetail({ id }: { id: string }) {
                     href={`/admin/pengguna/${a.umkm.owner_id}?tab=umkm`}
                     phone={a.umkm.phone}
                     kind="umkm"
-                    extra={<LegalStatusChips verification={a.umkm.legal_verification} />}
+                    image={a.umkm.logo_url}
+                    extra={<LegalStatusChips verification={a.umkm.legal.verification} />}
                   />
                 </div>
                 <DataList
@@ -134,7 +170,7 @@ export function ApplicationAdminDetail({ id }: { id: string }) {
                       <tr key={i.id} className="border-b align-middle last:border-0">
                         <td className="px-3 py-3 pl-6">
                           <span className="flex items-center gap-3">
-                            <Thumb size="sm" />
+                            <Thumb size="sm" src={i.product.photo_url} />
                             <span className="flex flex-col">
                               <span className="font-medium">{i.product.name}</span>
                               <span className="text-xs text-muted-foreground">Setor {formatRupiah(i.product.base_price)}</span>
@@ -166,6 +202,8 @@ export function ApplicationAdminDetail({ id }: { id: string }) {
                                 size="xs"
                                 onClick={() =>
                                   setStock({
+                                    applicationId: a.id,
+                                    itemId: i.id,
                                     productName: i.product.name,
                                     storeName: a.store.name,
                                     mode: a.stock_mode,
@@ -217,7 +255,7 @@ export function ApplicationAdminDetail({ id }: { id: string }) {
               </Section>
             </div>
 
-            {a.admin_can_review && <AdminReviewForm application={a} />}
+            {a.admin_can_review && <AdminReviewForm application={a} onDone={() => void refreshAll()} />}
 
             <Section title="Timeline">
               <ol className="relative flex flex-col gap-1 border-l pl-6">
@@ -238,7 +276,8 @@ export function ApplicationAdminDetail({ id }: { id: string }) {
                       <span className="text-xs text-muted-foreground tabular-nums">{formatDateTime(e.created_at)}</span>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {e.actor}
+                      {e.actor.name}
+                      {e.actor.role ? ` (${ACTOR_LABEL[e.actor.role] ?? e.actor.role})` : ""}
                       {e.from_status && e.from_status !== e.to_status && (
                         <> · {APPLICATION_STATUS[e.from_status].label} → {APPLICATION_STATUS[e.to_status].label}</>
                       )}
@@ -281,8 +320,8 @@ export function ApplicationAdminDetail({ id }: { id: string }) {
       />
 
       <SlotModal application={a} open={modal === "slot"} onOpenChange={close} />
-      <NotesModal application={a} open={modal === "notes"} onOpenChange={close} />
-      <StockModeModal application={a} open={modal === "stock_mode"} onOpenChange={close} />
+      <NotesModal key={`notes-${a.updated_at}`} application={a} open={modal === "notes"} onOpenChange={close} />
+      <StockModeModal key={`mode-${a.updated_at}`} application={a} open={modal === "stock_mode"} onOpenChange={close} />
       <NumbersModal application={a} item={numbers} onOpenChange={(o) => !o && setNumbers(null)} />
       <StockCorrectionModal target={stock} onOpenChange={(o) => !o && setStock(null)} />
       <RiskyActionModal
@@ -293,8 +332,10 @@ export function ApplicationAdminDetail({ id }: { id: string }) {
         confirmText={a.id.slice(0, 8)}
         destructive
         confirmLabel="Hapus permanen"
-        onConfirm={() => {
+        onConfirm={async ({ reason }) => {
+          await adminApi.del(`/admin/applications/${a.id}`, { query: { hard: true }, body: { admin_reason: reason } })
           toast.add({ title: "Pengajuan dihapus permanen.", type: "success" })
+          void refreshAll()
           router.push("/admin/pengajuan")
         }}
       />
@@ -308,6 +349,7 @@ function PartyCard({
   href,
   phone,
   kind,
+  image,
   extra,
 }: {
   label: string
@@ -315,11 +357,12 @@ function PartyCard({
   href: string
   phone: string
   kind: "store" | "umkm"
+  image?: string | null
   extra?: React.ReactNode
 }) {
   return (
     <div className="flex items-start gap-4 border p-4">
-      <Thumb kind={kind} />
+      <Thumb kind={kind} src={image} />
       <div className="flex min-w-0 flex-col gap-1.5">
         <span className="text-[0.625rem] font-semibold tracking-widest text-muted-foreground uppercase">{label}</span>
         <Link href={href} className="font-medium hover:text-primary hover:underline">
@@ -338,6 +381,7 @@ function ForceStatusCard({ application: a }: { application: AdminApplication }) 
   const [reason, setReason] = React.useState("")
   const [notify, setNotify] = React.useState(true)
   const [confirm, setConfirm] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
   const approved = a.items.filter((i) => i.decision === "approved")
   const effect = to ? TRANSITION_EFFECT[`${a.status}>${to}`] : null
 
@@ -377,7 +421,7 @@ function ForceStatusCard({ application: a }: { application: AdminApplication }) 
             <Checkbox checked={notify} onCheckedChange={(v) => setNotify(!!v)} />
             <span className="text-sm font-normal tracking-normal">Beri tahu toko dan UMKM</span>
           </Label>
-          <Button data-save disabled={!to || reason.trim().length < 5} onClick={() => setConfirm(true)}>
+          <Button data-save disabled={!to || reason.trim().length < 5 || busy} onClick={() => setConfirm(true)}>
             <IconShieldCheck data-icon="inline-start" /> Ubah status
           </Button>
         </div>
@@ -388,10 +432,29 @@ function ForceStatusCard({ application: a }: { application: AdminApplication }) 
         title={to ? `Ubah status ke ${APPLICATION_STATUS[to].label}?` : ""}
         description={effect ?? undefined}
         confirmLabel="Ubah status"
-        onConfirm={() => {
-          toast.add({ title: "Status diubah.", type: "success" })
-          setTo("")
-          setReason("")
+        onConfirm={async () => {
+          if (!to) return
+          setBusy(true)
+          try {
+            await adminApi.post(`/admin/applications/${a.id}/force-status`, {
+              to_status: to,
+              received_items:
+                to === "received"
+                  ? approved.map((i) => ({ item_id: i.id, received_quantity: received[i.id] ?? i.approved_quantity ?? 0 }))
+                  : [],
+              admin_reason: reason.trim(),
+              notify_user: notify,
+            })
+            toast.add({ title: "Status diubah.", type: "success" })
+            setTo("")
+            setReason("")
+            setReceived({})
+            void refreshAll()
+          } catch (e) {
+            handleApiError(e, { admin: true, onReload: () => void refreshAll() })
+          } finally {
+            setBusy(false)
+          }
         }}
       />
     </Section>
@@ -399,7 +462,7 @@ function ForceStatusCard({ application: a }: { application: AdminApplication }) 
 }
 
 function SlotModal({ application: a, open, onOpenChange }: { application: AdminApplication; open: boolean; onOpenChange: (o: boolean) => void }) {
-  const options = upcomingSlots(a.opportunity.receiving_schedule)
+  const [options] = React.useState(() => upcomingSlots(a.opportunity.receiving_schedule))
   const [value, setValue] = React.useState("")
   return (
     <RiskyActionModal
@@ -411,7 +474,11 @@ function SlotModal({ application: a, open, onOpenChange }: { application: AdminA
       notifyLabel="Beri tahu toko dan UMKM"
       confirmLabel="Ubah slot"
       canConfirm={!!value}
-      onConfirm={() => toast.add({ title: "Slot antar diubah.", type: "success" })}
+      onConfirm={async ({ reason, notify }) => {
+        await adminApi.patch(`/admin/applications/${a.id}`, { delivery_slot: parseSlot(value), admin_reason: reason, notify_user: notify })
+        toast.add({ title: "Slot antar diubah.", type: "success" })
+        void refreshAll()
+      }}
     >
       <FormField label="Slot baru" htmlFor="slot-new" required>
         <NativeSelect id="slot-new" value={value} onChange={(e) => setValue(e.target.value)}>
@@ -438,7 +505,11 @@ function NotesModal({ application: a, open, onOpenChange }: { application: Admin
       reason="optional"
       confirmLabel="Simpan catatan"
       canConfirm={note.length <= 300 && review.length <= 300}
-      onConfirm={() => toast.add({ title: "Catatan disimpan.", type: "success" })}
+      onConfirm={async ({ reason }) => {
+        await adminApi.patch(`/admin/applications/${a.id}`, { note, review_note: review, admin_reason: reason || undefined })
+        toast.add({ title: "Catatan disimpan.", type: "success" })
+        void refreshAll()
+      }}
     >
       <FormField label="Catatan UMKM" htmlFor="n-note" aside={<CharCount value={note} max={300} />}>
         <Textarea id="n-note" value={note} onChange={(e) => setNote(e.target.value)} className="min-h-16" />
@@ -459,7 +530,11 @@ function StockModeModal({ application: a, open, onOpenChange }: { application: A
       title="Ubah mode stok"
       reason="optional"
       confirmLabel="Simpan"
-      onConfirm={() => toast.add({ title: "Mode stok diubah.", type: "success" })}
+      onConfirm={async ({ reason }) => {
+        await adminApi.patch(`/admin/applications/${a.id}`, { stock_mode: mode, admin_reason: reason || undefined })
+        toast.add({ title: "Mode stok diubah.", type: "success" })
+        void refreshAll()
+      }}
     >
       <RadioGroup value={mode} onValueChange={(v) => setMode(v as StockMode)} className="flex flex-col gap-3">
         {(
@@ -514,7 +589,22 @@ function NumbersModal({
       notifyLabel="Beri tahu toko dan UMKM"
       confirmLabel="Simpan koreksi"
       canConfirm={priceOk}
-      onConfirm={() => toast.add({ title: "Angka produk dikoreksi.", type: "success" })}
+      onConfirm={async ({ reason, notify }) => {
+        await adminApi.patch(`/admin/applications/${a.id}`, {
+          items: [
+            {
+              item_id: item!.id,
+              approved_quantity: qty,
+              sell_price: price,
+              ...(showReceived ? { received_quantity: recv } : {}),
+            },
+          ],
+          admin_reason: reason,
+          notify_user: notify,
+        })
+        toast.add({ title: "Angka produk dikoreksi.", type: "success" })
+        void refreshAll()
+      }}
     >
       <div className="grid gap-6 sm:grid-cols-2">
         <FormField label="Jumlah disetujui">

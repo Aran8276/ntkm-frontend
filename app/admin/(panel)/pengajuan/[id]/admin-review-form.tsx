@@ -5,6 +5,8 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 import { calcCommission, formatRupiah } from "@/lib/format"
 import type { AdminApplication } from "@/lib/admin-types"
+import { adminApi } from "@/lib/api"
+import { handleApiError } from "@/components/app/feedback"
 import type { StockMode } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -16,7 +18,7 @@ import { toast } from "@/components/ui/toast"
 import { ConfirmDialog, Section, Thumb } from "@/components/app/blocks"
 import { FormField } from "@/components/app/form-field"
 import { CharCount, NumberStepper, RupiahInput } from "@/components/app/inputs"
-import { upcomingSlots } from "./slot-options"
+import { parseSlot, upcomingSlots } from "./slot-options"
 
 interface ItemDecision {
   decision: "approved" | "rejected" | null
@@ -26,7 +28,8 @@ interface ItemDecision {
 }
 
 /** "Review atas nama toko" (A16) — same shape as the P19 approval form plus admin reason. */
-export function AdminReviewForm({ application: a }: { application: AdminApplication }) {
+export function AdminReviewForm({ application: a, onDone }: { application: AdminApplication; onDone: () => void }) {
+  const [sending, setSending] = React.useState(false)
   const [items, setItems] = React.useState<Record<number, ItemDecision>>(() =>
     Object.fromEntries(a.items.map((i) => [i.id, { decision: null, qty: 12, price: i.product.suggested_retail_price, reason: "" }]))
   )
@@ -36,7 +39,7 @@ export function AdminReviewForm({ application: a }: { application: AdminApplicat
   const [reason, setReason] = React.useState("")
   const [notify, setNotify] = React.useState(true)
   const [confirm, setConfirm] = React.useState(false)
-  const slots = upcomingSlots(a.opportunity.receiving_schedule)
+  const [slots] = React.useState(() => upcomingSlots(a.opportunity.receiving_schedule))
 
   const update = (id: number, patch: Partial<ItemDecision>) => setItems((p) => ({ ...p, [id]: { ...p[id], ...patch } }))
   const all = Object.values(items)
@@ -162,7 +165,7 @@ export function AdminReviewForm({ application: a }: { application: AdminApplicat
             <Checkbox checked={notify} onCheckedChange={(v) => setNotify(!!v)} />
             <span className="text-sm font-normal tracking-normal">Beri tahu toko dan UMKM</span>
           </Label>
-          <Button data-save disabled={!valid} onClick={() => setConfirm(true)}>
+          <Button data-save disabled={!valid || sending} onClick={() => setConfirm(true)}>
             Kirim keputusan
           </Button>
         </div>
@@ -173,7 +176,30 @@ export function AdminReviewForm({ application: a }: { application: AdminApplicat
         title="Kirim keputusan atas nama toko?"
         description={`${all.filter((d) => d.decision === "approved").length} produk disetujui, ${all.filter((d) => d.decision === "rejected").length} ditolak.`}
         confirmLabel="Kirim keputusan"
-        onConfirm={() => toast.add({ title: "Keputusan dikirim.", type: "success" })}
+        onConfirm={async () => {
+          setSending(true)
+          try {
+            await adminApi.post(`/admin/applications/${a.id}/review`, {
+              items: a.items.map((i) => {
+                const d = items[i.id]
+                return d.decision === "approved"
+                  ? { item_id: i.id, decision: "approved", approved_quantity: d.qty, sell_price: d.price }
+                  : { item_id: i.id, decision: "rejected", reject_reason: d.reason.trim() }
+              }),
+              delivery_slot: anyApproved && slot ? parseSlot(slot) : null,
+              stock_mode: mode,
+              note,
+              admin_reason: reason.trim(),
+              notify_user: notify,
+            })
+            toast.add({ title: "Keputusan dikirim.", type: "success" })
+            onDone()
+          } catch (e) {
+            handleApiError(e, { admin: true, onReload: onDone })
+          } finally {
+            setSending(false)
+          }
+        }}
       />
     </Section>
   )

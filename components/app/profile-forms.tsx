@@ -6,17 +6,20 @@ import { IconInfoCircle } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
 import { formatDateTime } from "@/lib/format"
-import { ME, MY_STORE, MY_UMKM } from "@/lib/mock-data"
-import type { OperatingHour } from "@/lib/types"
+import { api } from "@/lib/api"
+import { revalidate, useApi, type UseApiResult } from "@/lib/use-api"
+import type { Me, OperatingHour, Role, StoreProfile, UmkmProfile } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
-import { AppShell } from "@/components/app/app-shell"
+import { AppShell, useAccessGuard } from "@/components/app/app-shell"
 import { Logo } from "@/components/app/logo"
-import { Section } from "@/components/app/blocks"
+import { PageSkeleton, PageSkeletonBody, Section } from "@/components/app/blocks"
+import { LoadError, formLevelError, handleApiError } from "@/components/app/feedback"
+import { onboardingDone, useSession } from "@/components/app/providers"
 import { FormField } from "@/components/app/form-field"
 import {
   CharCount,
@@ -41,26 +44,43 @@ interface Step {
 const PHONE_RE = /^(08|\+62)\d{7,13}$/
 
 /** Shared frame: onboarding = 3-step stepper; edit = every section on one page. */
+/** API field (`details` key) → form field name. */
+const API_FIELD: Record<string, string> = {
+  "legal.nib": "nib",
+  "legal.pirt_number": "pirt",
+  "legal.halal_number": "halal",
+  operating_hours: "hours",
+  lat: "address",
+  lng: "address",
+  photo_file_id: "name",
+  logo_file_id: "business_name",
+  legal_document_file_ids: "nib",
+}
+
 function ProfileFormFrame({
   mode,
+  role,
   title,
   steps,
   validate,
-  onSaved,
+  onSubmit,
   updatedAt,
   backHref,
 }: {
   mode: Mode
+  role: Role
   title: string
   steps: Step[]
   validate: () => Errors
-  onSaved: () => void
+  /** Saves the profile; throws ApiError on failure. */
+  onSubmit: () => Promise<void>
   updatedAt?: string
   backHref: string
 }) {
   const [step, setStep] = React.useState(0)
   const [saving, setSaving] = React.useState(false)
   const [errors, setErrors] = React.useState<Errors>({})
+  const [formError, setFormError] = React.useState<string | undefined>()
 
   const check = (fields: string[]) => {
     const all = validate()
@@ -69,7 +89,7 @@ function ProfileFormFrame({
     return Object.keys(scoped).length === 0
   }
 
-  const save = () => {
+  const save = async () => {
     const all = validate()
     const firstBad = steps.findIndex((s) => s.fields.some((f) => all[f]))
     if (firstBad >= 0) {
@@ -78,10 +98,28 @@ function ProfileFormFrame({
       return
     }
     setSaving(true)
-    setTimeout(() => {
+    setFormError(undefined)
+    try {
+      await onSubmit()
+    } catch (e) {
       setSaving(false)
-      onSaved()
-    }, 700)
+      handleApiError(e, {
+        onFieldErrors: (fields, err) => {
+          const known = steps.flatMap((x) => x.fields)
+          const mapped: Errors = {}
+          for (const [k, v] of Object.entries(fields)) {
+            const f = API_FIELD[k] ?? k.split(".")[0]
+            if (known.includes(f)) mapped[f] ??= v
+          }
+          setErrors(mapped)
+          setFormError(formLevelError(err, Object.keys(fields).filter((k) => known.includes(API_FIELD[k] ?? k.split(".")[0]))))
+          // Error 400 → back to the step holding the first bad field.
+          const bad = steps.findIndex((x) => x.fields.some((f) => mapped[f]))
+          if (mode === "onboarding" && bad >= 0) setStep(bad)
+          return true
+        },
+      })
+    }
   }
 
   const ctx = React.useMemo(() => errors, [errors])
@@ -90,6 +128,7 @@ function ProfileFormFrame({
     return (
       <ErrorsContext.Provider value={ctx}>
         <AppShell
+          role={role}
           title={title}
           back={backHref}
           hideNav
@@ -98,7 +137,7 @@ function ProfileFormFrame({
               <p className="hidden text-xs text-muted-foreground sm:block">
                 {updatedAt && `Terakhir diperbarui ${formatDateTime(updatedAt)}`}
               </p>
-              <Button className="w-full sm:w-auto" disabled={saving} onClick={save}>
+              <Button className="w-full sm:w-auto" disabled={saving} onClick={() => void save()}>
                 {saving ? (
                   <>
                     <Spinner data-icon="inline-start" /> Menyimpan…
@@ -110,6 +149,7 @@ function ProfileFormFrame({
             </div>
           }
         >
+          {formError && <p className="bg-destructive/10 px-5 py-4 text-sm text-destructive">{formError}</p>}
           {steps.map((s) => (
             <Section key={s.title} title={s.title} description={s.description}>
               <div className="flex flex-col gap-8">
@@ -165,6 +205,7 @@ function ProfileFormFrame({
               {current.content}
             </div>
           </Section>
+          {formError && last && <p className="bg-destructive/10 px-5 py-4 text-sm text-destructive">{formError}</p>}
         </main>
         <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-background">
           <div className="mx-auto flex max-w-2xl gap-3 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
@@ -176,7 +217,7 @@ function ProfileFormFrame({
             <Button
               className="flex-1"
               disabled={saving}
-              onClick={() => (last ? save() : check(current.fields) && setStep(step + 1))}
+              onClick={() => (last ? void save() : check(current.fields) && setStep(step + 1))}
             >
               {saving ? (
                 <>
@@ -260,13 +301,51 @@ function AddressField({ name, label, value, onChange, placeholder }: {
 // P04 · Store profile
 // ---------------------------------------------------------------------------
 
+/**
+ * Loads `GET /me/<kind>-profile` (404 = no profile yet → empty form) behind
+ * the login guard, then renders the form.
+ */
+function useProfileLoader<T>(role: Role, path: string, mode: Mode) {
+  const ready = useAccessGuard(role, mode === "onboarding" ? "onboarding" : "full")
+  const q: UseApiResult<T> = useApi<T>("user", ready ? path : null)
+  const missing = q.error?.code === "not_found"
+  return { ready: ready && (!!q.data || missing), q, profile: q.data, failed: q.error && !missing ? q.error : undefined }
+}
+
+function LoaderFallback({ mode, role, title, failed, retry }: { mode: Mode; role: Role; title: string; failed?: Parameters<typeof LoadError>[0]["error"]; retry: () => void }) {
+  if (mode === "onboarding" && !failed) return <PageSkeleton />
+  return (
+    <AppShell role={role} title={title} back="/profil" hideNav access={mode === "onboarding" ? "onboarding" : "full"}>
+      {failed ? <LoadError error={failed} onRetry={retry} /> : <PageSkeletonBody />}
+    </AppShell>
+  )
+}
+
+/** Where to go after saving a profile (spec P04/P05). */
+function afterSave(me: Me | undefined, role: Role, mode: Mode) {
+  if (mode === "edit") return "/profil"
+  if (role === "store" && me?.roles.includes("umkm") && !onboardingDone(me, "umkm")) return "/onboarding/umkm"
+  return role === "store" ? "/toko" : "/umkm"
+}
+
 export function StoreProfileForm({ mode }: { mode: Mode }) {
+  const { ready, q, profile, failed } = useProfileLoader<StoreProfile>("store", "/me/store-profile", mode)
+  if (!ready)
+    return <LoaderFallback mode={mode} role="store" title={mode === "edit" ? "Ubah profil toko" : "Profil toko"} failed={failed} retry={() => void q.reload()} />
+  return <StoreProfileFormInner mode={mode} profile={profile} />
+}
+
+function StoreProfileFormInner({ mode, profile }: { mode: Mode; profile?: StoreProfile }) {
   const router = useRouter()
+  const { reloadMe, setRole } = useSession()
   const edit = mode === "edit"
-  const [name, setName] = React.useState(edit ? MY_STORE.name : "")
-  const [phone, setPhone] = React.useState(edit ? MY_STORE.phone : "")
-  const [address, setAddress] = React.useState(edit ? MY_STORE.address : "")
-  const [hours, setHours] = React.useState<OperatingHour[]>(edit ? MY_STORE.operating_hours : DEFAULT_HOURS)
+  const p = profile
+  const [name, setName] = React.useState(p?.name ?? "")
+  const [phone, setPhone] = React.useState(p?.phone ?? "")
+  const [address, setAddress] = React.useState(p?.address ?? "")
+  const [hours, setHours] = React.useState<OperatingHour[]>(p?.operating_hours ?? DEFAULT_HOURS)
+  const [photoIds, setPhotoIds] = React.useState<string[]>(p?.photo_file_id ? [p.photo_file_id] : [])
+  const [loc, setLoc] = React.useState({ lat: p?.lat ?? -7.9467, lng: p?.lng ?? 112.6159 })
 
   const validate = (): Errors => ({
     name: name.trim().length < 3 || name.length > 100 ? "Nama toko 3–100 karakter." : undefined,
@@ -282,13 +361,27 @@ export function StoreProfileForm({ mode }: { mode: Mode }) {
   return (
     <ProfileFormFrame
       mode={mode}
+      role="store"
       title={edit ? "Ubah profil toko" : "Profil toko"}
       backHref="/profil"
-      updatedAt={edit ? MY_STORE.updated_at : undefined}
+      updatedAt={edit ? p?.updated_at : undefined}
       validate={validate}
-      onSaved={() => {
+      onSubmit={async () => {
+        await api.put("/me/store-profile", {
+          name: name.trim(),
+          phone: phone.replace(/[\s-]/g, ""),
+          photo_file_id: photoIds[0] ?? null,
+          address: address.trim(),
+          lat: loc.lat,
+          lng: loc.lng,
+          operating_hours: hours,
+        })
+        await reloadMe()
+        void revalidate("user", "/me")
         toast.add({ title: "Profil toko tersimpan.", type: "success" })
-        router.push(edit ? "/profil" : "/toko")
+        if (!edit) setRole("store")
+        const me = await api.get<Me>("/me").catch(() => undefined)
+        router.push(afterSave(me, "store", mode))
       }}
       steps={[
         {
@@ -308,7 +401,13 @@ export function StoreProfileForm({ mode }: { mode: Mode }) {
                 placeholder="0812 3456 7890"
               />
               <FormField label="Foto depan toko" description="Membantu UMKM mengenali toko saat antar barang.">
-                <FileUpload max={1} initialCount={edit ? 1 : 0} markPrimary={false} />
+                <FileUpload
+                  purpose="store_photo"
+                  max={1}
+                  initial={p?.photo ? [p.photo] : []}
+                  onChange={setPhotoIds}
+                  markPrimary={false}
+                />
               </FormField>
             </>
           ),
@@ -330,7 +429,7 @@ export function StoreProfileForm({ mode }: { mode: Mode }) {
                 required
                 description="Geser pin tepat ke depan toko. Lokasi ini dipakai UMKM untuk menghitung jarak."
               >
-                <LocationPicker lat={MY_STORE.lat} lng={MY_STORE.lng} />
+                <LocationPicker lat={p?.lat} lng={p?.lng} onChange={setLoc} />
               </FormField>
             </>
           ),
@@ -363,16 +462,29 @@ function HoursField({ value, onChange }: { value: OperatingHour[]; onChange: (v:
 // ---------------------------------------------------------------------------
 
 export function UmkmProfileForm({ mode }: { mode: Mode }) {
+  const { ready, q, profile, failed } = useProfileLoader<UmkmProfile>("umkm", "/me/umkm-profile", mode)
+  if (!ready)
+    return <LoaderFallback mode={mode} role="umkm" title={mode === "edit" ? "Ubah profil UMKM" : "Profil UMKM"} failed={failed} retry={() => void q.reload()} />
+  return <UmkmProfileFormInner mode={mode} profile={profile} />
+}
+
+function UmkmProfileFormInner({ mode, profile }: { mode: Mode; profile?: UmkmProfile }) {
   const router = useRouter()
+  const { me, reloadMe, setRole } = useSession()
   const edit = mode === "edit"
-  const [businessName, setBusinessName] = React.useState(edit ? MY_UMKM.business_name : "")
-  const [ownerName, setOwnerName] = React.useState(edit ? MY_UMKM.owner_name : ME.name)
-  const [phone, setPhone] = React.useState(edit ? MY_UMKM.phone : "")
-  const [description, setDescription] = React.useState(edit ? MY_UMKM.description : "")
-  const [address, setAddress] = React.useState(edit ? MY_UMKM.address : "")
-  const [nib, setNib] = React.useState(edit ? (MY_UMKM.legal.nib ?? "") : "")
-  const [pirt, setPirt] = React.useState(edit ? (MY_UMKM.legal.pirt_number ?? "") : "")
-  const [halal, setHalal] = React.useState(edit ? (MY_UMKM.legal.halal_number ?? "") : "")
+  const p = profile
+  const [businessName, setBusinessName] = React.useState(p?.business_name ?? "")
+  // owner_name is prefilled from the Google account name.
+  const [ownerName, setOwnerName] = React.useState(p?.owner_name ?? me?.name ?? "")
+  const [phone, setPhone] = React.useState(p?.phone ?? "")
+  const [description, setDescription] = React.useState(p?.description ?? "")
+  const [address, setAddress] = React.useState(p?.address ?? "")
+  const [nib, setNib] = React.useState(p?.legal.nib ?? "")
+  const [pirt, setPirt] = React.useState(p?.legal.pirt_number ?? "")
+  const [halal, setHalal] = React.useState(p?.legal.halal_number ?? "")
+  const [logoIds, setLogoIds] = React.useState<string[]>(p?.logo_file_id ? [p.logo_file_id] : [])
+  const [docIds, setDocIds] = React.useState<string[]>(p?.legal_document_file_ids ?? [])
+  const [loc, setLoc] = React.useState({ lat: p?.lat ?? -7.9612, lng: p?.lng ?? 112.6475 })
 
   const validate = (): Errors => ({
     business_name:
@@ -387,13 +499,29 @@ export function UmkmProfileForm({ mode }: { mode: Mode }) {
   return (
     <ProfileFormFrame
       mode={mode}
+      role="umkm"
       title={edit ? "Ubah profil UMKM" : "Profil UMKM"}
       backHref="/profil"
-      updatedAt={edit ? MY_UMKM.updated_at : undefined}
+      updatedAt={edit ? p?.updated_at : undefined}
       validate={validate}
-      onSaved={() => {
+      onSubmit={async () => {
+        await api.put("/me/umkm-profile", {
+          business_name: businessName.trim(),
+          owner_name: ownerName.trim(),
+          phone: phone.replace(/[\s-]/g, ""),
+          description,
+          logo_file_id: logoIds[0] ?? null,
+          address: address.trim(),
+          lat: loc.lat,
+          lng: loc.lng,
+          legal: { nib: nib || null, pirt_number: pirt.trim() || null, halal_number: halal.trim() || null },
+          legal_document_file_ids: docIds,
+        })
+        await reloadMe()
+        void revalidate("user", "/me", "/opportunities")
         toast.add({ title: "Profil usaha tersimpan.", type: "success" })
-        router.push(edit ? "/profil" : "/umkm")
+        if (!edit) setRole("umkm")
+        router.push(afterSave(undefined, "umkm", mode))
       }}
       steps={[
         {
@@ -415,7 +543,13 @@ export function UmkmProfileForm({ mode }: { mode: Mode }) {
               />
               <DescriptionField value={description} onChange={setDescription} />
               <FormField label="Logo atau foto usaha">
-                <FileUpload max={1} initialCount={edit ? 1 : 0} markPrimary={false} />
+                <FileUpload
+                  purpose="umkm_logo"
+                  max={1}
+                  initial={p?.logo ? [p.logo] : []}
+                  onChange={setLogoIds}
+                  markPrimary={false}
+                />
               </FormField>
             </>
           ),
@@ -433,7 +567,7 @@ export function UmkmProfileForm({ mode }: { mode: Mode }) {
                 placeholder="Jl. Sanan Gg. 3 No. 17, Purwantoro"
               />
               <FormField label="Titik lokasi" required description="Dipakai untuk mencari toko terdekat dari tempat Anda.">
-                <LocationPicker lat={-7.9612} lng={112.6475} />
+                <LocationPicker lat={p?.lat ?? -7.9612} lng={p?.lng ?? 112.6475} onChange={setLoc} />
               </FormField>
             </>
           ),
@@ -443,12 +577,12 @@ export function UmkmProfileForm({ mode }: { mode: Mode }) {
           fields: ["nib"],
           aside: (
             <>
-              {edit && (
+              {edit && p && (
                 <div className="flex flex-col gap-2">
                   <p className="text-[0.6875rem] font-semibold tracking-widest text-muted-foreground uppercase">
                     Ringkasan legalitas
                   </p>
-                  <LegalChips legal={MY_UMKM.legal} />
+                  <LegalChips legal={p.legal} />
                 </div>
               )}
               <Alert>
@@ -474,11 +608,13 @@ export function UmkmProfileForm({ mode }: { mode: Mode }) {
               <TextField name="halal" label="Nomor sertifikat halal" value={halal} onChange={setHalal} />
               <FormField label="Foto/scan dokumen" description="JPG, PNG, atau PDF, maks 5 MB per file.">
                 <FileUpload
+                  purpose="legal_document"
                   variant="document"
                   max={5}
-                  accept="image/jpeg,image/png,application/pdf"
+                  accept="image/jpeg,image/png,image/webp,application/pdf"
                   label="Tambah dokumen"
-                  initialCount={edit ? 2 : 0}
+                  initial={p?.legal_documents ?? []}
+                  onChange={setDocIds}
                 />
               </FormField>
             </>

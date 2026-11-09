@@ -3,29 +3,28 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 
+import { adminApi } from "@/lib/api"
+import { revalidate } from "@/lib/use-api"
 import type { AdminProduct } from "@/lib/admin-types"
 import { toast } from "@/components/ui/toast"
-import { ConflictModal, RiskyActionModal } from "@/components/admin/risky-action"
+import { RiskyActionModal } from "@/components/admin/risky-action"
 
 export type ProductAction = "archive" | "activate" | "delete" | "restore" | "hard_delete" | "remove_photo"
 
-const activeApps = (p: AdminProduct) => p.applications.filter((a) => ["submitted", "approved", "in_delivery", "received"].includes(a.status))
+const refresh = () => revalidate("admin", "/admin/products", "/admin/files", "/admin/audit-logs", "/admin/dashboard")
 
-/** Arsipkan / aktifkan / hapus / pulihkan / hapus permanen / hapus foto (A12, A13). */
+/**
+ * Arsipkan / aktifkan / hapus / pulihkan / hapus permanen / hapus foto
+ * (A12, A13). A 409 `has_active_relations` from the API opens the shared
+ * "Tidak bisa dilanjutkan" dialog with links to the applications.
+ */
 export function useProductActions() {
   const router = useRouter()
-  const [state, setState] = React.useState<{ action: ProductAction; product: AdminProduct } | null>(null)
-  const [blocked, setBlocked] = React.useState<AdminProduct | null>(null)
+  const [state, setState] = React.useState<{ action: ProductAction; product: AdminProduct; fileId?: string } | null>(null)
   const p = state?.product
   const close = (v: boolean) => !v && setState(null)
 
-  const open = (action: ProductAction, product: AdminProduct) => {
-    if (action === "delete" && activeApps(product).length > 0) {
-      setBlocked(product)
-      return
-    }
-    setState({ action, product })
-  }
+  const open = (action: ProductAction, product: AdminProduct, fileId?: string) => setState({ action, product, fileId })
 
   const modals = (
     <>
@@ -38,7 +37,11 @@ export function useProductActions() {
         notify
         notifyLabel="Beri tahu UMKM"
         confirmLabel="Arsipkan"
-        onConfirm={() => toast.add({ title: "Produk diarsipkan.", type: "success" })}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.patch(`/admin/products/${p!.id}`, { is_active: false, admin_reason: reason || undefined, notify_user: notify })
+          toast.add({ title: "Produk diarsipkan.", type: "success" })
+          void refresh()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "activate"}
@@ -49,7 +52,11 @@ export function useProductActions() {
         notify
         notifyLabel="Beri tahu UMKM"
         confirmLabel="Aktifkan"
-        onConfirm={() => toast.add({ title: "Produk diaktifkan.", type: "success" })}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.patch(`/admin/products/${p!.id}`, { is_active: true, admin_reason: reason || undefined, notify_user: notify })
+          toast.add({ title: "Produk diaktifkan.", type: "success" })
+          void refresh()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "delete"}
@@ -64,7 +71,11 @@ export function useProductActions() {
         notifyLabel="Beri tahu UMKM"
         destructive
         confirmLabel="Hapus"
-        onConfirm={() => toast.add({ title: "Produk dihapus.", type: "success" })}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.del(`/admin/products/${p!.id}`, { body: { admin_reason: reason, notify_user: notify } })
+          toast.add({ title: "Produk dihapus.", type: "success" })
+          void refresh()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "restore"}
@@ -72,7 +83,11 @@ export function useProductActions() {
         title={`Pulihkan ${p?.name ?? ""}?`}
         impacts={["Produk kembali dengan status aktif/arsip seperti sebelum dihapus"]}
         confirmLabel="Pulihkan"
-        onConfirm={() => toast.add({ title: "Produk dipulihkan.", type: "success" })}
+        onConfirm={async ({ reason }) => {
+          await adminApi.post(`/admin/products/${p!.id}/restore`, { admin_reason: reason })
+          toast.add({ title: "Produk dipulihkan.", type: "success" })
+          void refresh()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "hard_delete"}
@@ -82,8 +97,10 @@ export function useProductActions() {
         confirmText={p?.name}
         destructive
         confirmLabel="Hapus permanen"
-        onConfirm={() => {
+        onConfirm={async ({ reason }) => {
+          await adminApi.del(`/admin/products/${p!.id}`, { query: { hard: true }, body: { admin_reason: reason } })
           toast.add({ title: "Produk dihapus permanen.", type: "success" })
+          void refresh()
           router.push("/admin/produk")
         }}
       />
@@ -99,13 +116,11 @@ export function useProductActions() {
         notifyLabel="Beri tahu UMKM"
         destructive
         confirmLabel="Hapus foto"
-        onConfirm={() => toast.add({ title: "Foto dihapus.", type: "success" })}
-      />
-      <ConflictModal
-        open={!!blocked}
-        onOpenChange={(v) => !v && setBlocked(null)}
-        message="Produk ini masih ada di pengajuan aktif."
-        links={blocked ? activeApps(blocked).map((a) => ({ label: `Pengajuan ${a.id.slice(0, 8)} · ${a.store}`, href: `/admin/pengajuan/${a.id}` })) : []}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.post(`/admin/files/${state!.fileId}/remove`, { admin_reason: reason, notify_user: notify })
+          toast.add({ title: "Foto dihapus.", type: "success" })
+          void refresh()
+        }}
       />
     </>
   )

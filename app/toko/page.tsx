@@ -5,26 +5,47 @@ import { IconPlus, IconTargetArrow } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
 import { formatToday } from "@/lib/format"
-import { MY_OPPORTUNITIES, MY_STORE, STORE_APPLICATIONS, STORE_STOCK } from "@/lib/mock-data"
+import type { Paginated } from "@/lib/api"
+import { useApi, useNow } from "@/lib/use-api"
+import type { Application, Opportunity, StockRow } from "@/lib/types"
 import { buttonVariants } from "@/components/ui/button"
 import { AppShell } from "@/components/app/app-shell"
-import { Fab, InlineEmpty, PageHeading, Section, SeeAll, StatTile } from "@/components/app/blocks"
+import { Count, Fab, InlineEmpty, ListSkeleton, PageHeading, Section, SeeAll, StatTile } from "@/components/app/blocks"
 import { ApplicationCard, DeliveryRow, StockRowItem } from "@/components/app/cards"
+import { LoadError } from "@/components/app/feedback"
+import { useSession } from "@/components/app/providers"
 
+/** P06 · Beranda toko. Numbers come from list `count`s (no dashboard endpoint). */
 export default function StoreHomePage() {
-  const submitted = STORE_APPLICATIONS.filter((a) => a.status === "submitted")
-  const upcoming = STORE_APPLICATIONS.filter((a) => ["approved", "in_delivery"].includes(a.status))
-    .filter((a) => a.delivery_slot)
-    .sort((a, b) => `${a.delivery_slot!.date}${a.delivery_slot!.start}`.localeCompare(`${b.delivery_slot!.date}${b.delivery_slot!.start}`))
-  const outOfStock = STORE_STOCK.filter((s) => s.stock_status === "out_of_stock")
-  const openOpps = MY_OPPORTUNITIES.filter((o) => o.status === "open")
-  const hasOpportunities = MY_OPPORTUNITIES.length > 0
+  const { me } = useSession()
+  const now = useNow()
+  const submitted = useApi<Paginated<Application>>("user", "/applications", { as: "store", status: "submitted", page_size: 3 })
+  const upcoming = useApi<Paginated<Application>>("user", "/applications", {
+    as: "store",
+    status: "approved,in_delivery",
+    ordering: "delivery_slot_start",
+    page_size: 100,
+  })
+  const outOfStock = useApi<Paginated<StockRow>>("user", "/stock", { as: "store", stock_status: "out_of_stock", page_size: 3 })
+  const openOpps = useApi<Paginated<Opportunity>>("user", "/me/opportunities", { status: "open", page_size: 1 })
+  const anyOpps = useApi<Paginated<Opportunity>>("user", "/me/opportunities", { page_size: 1 })
+
+  const upcomingList = (upcoming.data?.results ?? []).filter((a) => a.delivery_slot)
+  const error = [submitted, upcoming, outOfStock, openOpps].find((q) => q.error && !q.data)?.error
+  const retry = () => {
+    void submitted.reload()
+    void upcoming.reload()
+    void outOfStock.reload()
+    void openOpps.reload()
+  }
 
   return (
     <AppShell role="store" title="Beranda" width="wide">
-      <PageHeading eyebrow={formatToday()} title={`Halo, ${MY_STORE.name}`} />
+      <PageHeading eyebrow={now ? formatToday(now) : " "} title={`Halo, ${me?.store_profile?.name ?? me?.name ?? ""}`} />
 
-      {!hasOpportunities && (
+      {error && <LoadError error={error} onRetry={retry} />}
+
+      {anyOpps.data?.count === 0 && (
         <div className="flex flex-col items-start gap-4 bg-primary p-6 text-primary-foreground sm:flex-row sm:items-center">
           <IconTargetArrow className="size-8 shrink-0" stroke={1.5} />
           <p className="flex-1">Pasang peluang pertama Anda agar UMKM sekitar bisa mengajukan produk.</p>
@@ -35,27 +56,34 @@ export default function StoreHomePage() {
       )}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatTile label="Pengajuan baru" value={submitted.length} href="/toko/pengajuan?tab=submitted" highlight={submitted.length > 0} />
-        <StatTile label="Barang akan datang" value={upcoming.length} href="/toko/pengajuan?tab=approved" />
-        <StatTile label="Stok habis" value={outOfStock.length} href="/toko/stok?filter=out_of_stock" />
-        <StatTile label="Peluang aktif" value={openOpps.length} href="/toko/peluang?tab=open" />
+        <StatTile
+          label="Pengajuan baru"
+          value={<Count n={submitted.data?.count} />}
+          href="/toko/pengajuan?tab=submitted"
+          highlight={(submitted.data?.count ?? 0) > 0}
+        />
+        <StatTile label="Barang akan datang" value={<Count n={upcoming.data?.count} />} href="/toko/pengajuan?tab=approved" />
+        <StatTile label="Stok habis" value={<Count n={outOfStock.data?.count} />} href="/toko/stok?filter=out_of_stock" />
+        <StatTile label="Peluang aktif" value={<Count n={openOpps.data?.count} />} href="/toko/peluang?tab=open" />
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
         <Section title="Perlu ditinjau" action={<SeeAll href="/toko/pengajuan" />} contentClassName="flex flex-col gap-3">
-          {submitted.length ? (
-            submitted.slice(0, 3).map((a) => (
-              <ApplicationCard key={a.id} application={a} viewer="store" inset />
-            ))
+          {submitted.loading ? (
+            <ListSkeleton rows={2} />
+          ) : submitted.data?.results.length ? (
+            submitted.data.results.map((a) => <ApplicationCard key={a.id} application={a} viewer="store" inset />)
           ) : (
             <InlineEmpty>Belum ada pengajuan baru.</InlineEmpty>
           )}
         </Section>
 
         <Section title="Jadwal antar mendatang">
-          {upcoming.length ? (
+          {upcoming.loading ? (
+            <ListSkeleton rows={2} />
+          ) : upcomingList.length ? (
             <div className="-my-4">
-              {upcoming.map((a) => (
+              {upcomingList.map((a) => (
                 <DeliveryRow key={a.id} application={a} viewer="store" />
               ))}
             </div>
@@ -65,10 +93,10 @@ export default function StoreHomePage() {
         </Section>
       </div>
 
-      {outOfStock.length > 0 && (
+      {(outOfStock.data?.count ?? 0) > 0 && (
         <Section title="Stok habis" action={<SeeAll href="/toko/stok?filter=out_of_stock" />} contentClassName="flex flex-col gap-3">
-          {outOfStock.slice(0, 3).map((s) => (
-            <StockRowItem key={s.item_id} row={s} viewer="store" inset />
+          {outOfStock.data!.results.map((s) => (
+            <StockRowItem key={s.item_id} row={s} viewer="store" inset onChanged={() => void outOfStock.reload()} />
           ))}
         </Section>
       )}

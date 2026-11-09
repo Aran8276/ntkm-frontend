@@ -11,9 +11,14 @@ import {
   formatDateTime,
   formatRupiah,
   summarizeSchedule,
+  todayIso,
 } from "@/lib/format"
-import { ADMIN_APPLICATIONS, TODAY, findOpportunity } from "@/lib/admin-mock"
+import type { Paginated } from "@/lib/api"
+import { useApi } from "@/lib/use-api"
+import type { AdminApplicationRow, AdminOpportunity } from "@/lib/admin-types"
 import type { ApplicationStatus } from "@/lib/types"
+import { LoadError } from "@/components/app/feedback"
+import { TableSkeleton } from "@/components/admin/data-table"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Section } from "@/components/app/blocks"
@@ -46,14 +51,28 @@ const TAB_STATUS: Record<Tab, ApplicationStatus[] | null> = {
   history: ["completed", "rejected", "cancelled"],
 }
 
-/** A10 · Detail peluang. */
+/** A10 · Detail peluang: `GET /admin/opportunities/{id}` + `GET /admin/applications?opportunity_id=`. */
 export function OpportunityDetail({ id }: { id: string }) {
-  const o = findOpportunity(id)!
+  const q = useApi<AdminOpportunity>("admin", `/admin/opportunities/${id}`)
   const { isSuperadmin } = useAdmin()
   const { open, modals } = useOpportunityActions()
   const [tab, setTab] = useQueryState<Tab>("status", "all")
-  const apps = ADMIN_APPLICATIONS.filter((a) => a.opportunity.id === o.id)
-  const visible = apps.filter((a) => !TAB_STATUS[tab] || TAB_STATUS[tab]!.includes(a.status))
+  const [TODAY] = React.useState(() => todayIso())
+  const appsQ = useApi<Paginated<AdminApplicationRow>>("admin", "/admin/applications", {
+    opportunity_id: id,
+    status: TAB_STATUS[tab] ?? undefined,
+    page_size: 100,
+  })
+  const visible = appsQ.data?.results ?? []
+
+  const o = q.data
+  if (!o)
+    return (
+      <AdminPage breadcrumb={[{ label: "Peluang", href: "/admin/peluang" }]} title="Detail peluang">
+        {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref="/admin/peluang" backLabel="Kembali ke Peluang" /> : <TableSkeleton />}
+      </AdminPage>
+    )
+  const counts = o.application_counts ?? {}
   const r = o.requirements
   const sample = calcCommission(10000, o.commission)
 
@@ -89,7 +108,7 @@ export function OpportunityDetail({ id }: { id: string }) {
             </Button>
           }
         >
-          Data ini dihapus pada {formatDateTime(o.deleted_at)} oleh {o.deleted_by}.
+          Data ini dihapus pada {formatDateTime(o.deleted_at)} oleh {o.deleted_by?.name ?? "—"}.
         </Banner>
       )}
 
@@ -105,13 +124,13 @@ export function OpportunityDetail({ id }: { id: string }) {
                       {o.quota_used} dari {o.quota} UMKM
                     </span>
                   </div>
-                  <Progress value={(o.quota_used / o.quota) * 100} aria-label="Kuota terpakai" />
+                  <Progress value={o.quota ? (o.quota_used / o.quota) * 100 : 0} aria-label="Kuota terpakai" />
                 </div>
                 <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
                   {(Object.keys(APPLICATION_STATUS) as ApplicationStatus[]).map((s) => (
                     <span key={s} className="flex items-center gap-2">
                       <span className="text-muted-foreground">{APPLICATION_STATUS[s].label}</span>
-                      <span className="font-medium tabular-nums">{o.application_counts[s] ?? 0}</span>
+                      <span className="font-medium tabular-nums">{counts[s] ?? 0}</span>
                     </span>
                   ))}
                 </div>
@@ -187,7 +206,7 @@ export function OpportunityDetail({ id }: { id: string }) {
                   className="-mt-2"
                   options={[
                     { value: "all", label: "Semua" },
-                    { value: "submitted", label: "Diajukan", count: o.application_counts.submitted },
+                    { value: "submitted", label: "Diajukan", count: counts.submitted },
                     { value: "approved", label: "Disetujui" },
                     { value: "in_delivery", label: "Dalam pengiriman" },
                     { value: "received", label: "Diterima toko" },
@@ -231,7 +250,7 @@ export function OpportunityDetail({ id }: { id: string }) {
                     <IconTrash data-icon="inline-start" /> Hapus
                   </Button>
                 )}
-                {isSuperadmin && apps.length === 0 && (
+                {isSuperadmin && !o.has_applications && (
                   <Button variant="destructive" onClick={() => open("hard_delete", o)}>
                     <IconTrash data-icon="inline-start" /> Hapus permanen
                   </Button>
@@ -243,7 +262,7 @@ export function OpportunityDetail({ id }: { id: string }) {
                 columns={1}
                 items={[
                   { label: "ID", value: <IdCell id={o.id} /> },
-                  { label: "Dibuat oleh", value: o.created_by.name },
+                  { label: "Dibuat oleh", value: o.created_by?.name },
                   { label: "Dibuat", value: <DateTime value={o.created_at} /> },
                   { label: "Diperbarui", value: <DateTime value={o.updated_at} /> },
                 ]}

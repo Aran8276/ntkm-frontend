@@ -1,12 +1,12 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 import { IconCheck, IconX } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
-import { DAYS, DAY_LABEL_SHORT, NOW, calcCommission, formatRupiah, formatShelfLife, formatTimeRange } from "@/lib/format"
-import type { Application, DeliverySlot, Day, StockMode } from "@/lib/types"
+import { DAYS, DAY_LABEL_SHORT, addDaysIso, calcCommission, formatRupiah, formatShelfLife, formatTimeRange } from "@/lib/format"
+import type { Application, Day, StockMode } from "@/lib/types"
+import { Spinner } from "@/components/ui/spinner"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -25,7 +25,7 @@ export interface ReviewResult {
     income: number
     reject_reason: string
   }[]
-  delivery_slot: DeliverySlot | null
+  delivery_slot: { date: string; start: string; end: string } | null
   stock_mode: StockMode
   note: string
 }
@@ -41,11 +41,12 @@ interface ItemState {
 const REJECT_REASONS = ["Kategori sudah penuh", "Harga tidak sesuai", "Kemasan belum memenuhi syarat", "Lainnya"]
 
 /** Next 14 days starting tomorrow (Asia/Jakarta), keyed by weekday. */
-function nextDates() {
+function nextDates(now: Date) {
   return Array.from({ length: 14 }, (_, i) => {
-    const d = new Date(NOW.getTime() + (i + 1) * 86_400_000 + 7 * 3_600_000)
+    const iso = addDaysIso(i + 1, now)
+    const d = new Date(`${iso}T00:00:00Z`)
     const day: Day = DAYS[(d.getUTCDay() + 6) % 7]
-    return { iso: d.toISOString().slice(0, 10), day, date: d.getUTCDate() }
+    return { iso, day, date: d.getUTCDate() }
   })
 }
 
@@ -53,10 +54,13 @@ function nextDates() {
 export function ReviewForm({
   application: a,
   onSubmit,
+  pending = false,
 }: {
   application: Application
   onSubmit: (r: ReviewResult) => void
+  pending?: boolean
 }) {
+  const [now] = React.useState(() => new Date())
   const [items, setItems] = React.useState<Record<number, ItemState>>(() =>
     Object.fromEntries(
       a.items.map((it) => [
@@ -70,12 +74,11 @@ export function ReviewForm({
   const [stockMode, setStockMode] = React.useState<StockMode>("count")
   const [note, setNote] = React.useState("")
   const [confirm, setConfirm] = React.useState(false)
-  const [quotaFull, setQuotaFull] = React.useState(false)
 
   const update = (id: number, patch: Partial<ItemState>) =>
     setItems((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
 
-  const dates = nextDates().filter((d) => a.opportunity.receiving_schedule.some((s) => s.day === d.day))
+  const dates = nextDates(now).filter((d) => a.opportunity.receiving_schedule.some((s) => s.day === d.day))
   const selectedDay = dates.find((d) => d.iso === date)?.day
   const daySlots = a.opportunity.receiving_schedule.filter((s) => s.day === selectedDay)
 
@@ -95,8 +98,6 @@ export function ReviewForm({
   const canSubmit = allDecided && a.items.every((it) => itemValid(it.id)) && slotValid && note.length <= 300
 
   const send = () => {
-    // Mock 409 for demo: never triggered; kept to show the dialog wiring.
-    if (quotaFull) return
     const slot = slotIdx != null ? daySlots[slotIdx] : null
     onSubmit({
       items: a.items.map((it) => {
@@ -129,7 +130,7 @@ export function ReviewForm({
             return (
               <div key={it.id} className="flex flex-col gap-5 bg-muted/50 p-5">
                 <div className="flex gap-4">
-                  <Thumb kind="product" className="bg-background" />
+                  <Thumb kind="product" src={p.photo_url} className="bg-background" />
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <p className="font-medium">{p.name}</p>
                     <p className="text-xs text-muted-foreground">
@@ -299,8 +300,14 @@ export function ReviewForm({
           <span className="font-semibold">{approved}</span> disetujui · <span className="font-semibold">{rejected}</span> ditolak
           {!allDecided && <span className="text-background/60"> · {a.items.length - approved - rejected} belum</span>}
         </p>
-        <Button variant="secondary" disabled={!canSubmit} onClick={() => setConfirm(true)}>
-          Kirim keputusan
+        <Button variant="secondary" disabled={!canSubmit || pending} onClick={() => setConfirm(true)}>
+          {pending ? (
+            <>
+              <Spinner data-icon="inline-start" /> Menyimpan…
+            </>
+          ) : (
+            "Kirim keputusan"
+          )}
         </Button>
       </div>
 
@@ -313,18 +320,6 @@ export function ReviewForm({
         destructive={approved === 0}
         onConfirm={send}
       />
-      <ConfirmDialog
-        open={quotaFull}
-        onOpenChange={setQuotaFull}
-        title="Kuota peluang sudah penuh"
-        description="Tambah kuota di peluang atau tolak pengajuan ini."
-        confirmLabel="Mengerti"
-        onConfirm={() => {}}
-      >
-        <Link href={`/toko/peluang/${a.opportunity.id}/ubah`} className="text-sm text-primary underline">
-          Ubah peluang
-        </Link>
-      </ConfirmDialog>
     </>
   )
 }

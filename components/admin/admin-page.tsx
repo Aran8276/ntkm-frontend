@@ -13,8 +13,6 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -22,7 +20,6 @@ import { ConfirmDialog } from "@/components/app/blocks"
 import { useAdmin } from "@/components/admin/admin-context"
 import { MobileNavButton } from "@/components/admin/admin-shell"
 import { AdminLevelChip, Avatar } from "@/components/admin/admin-ui"
-import type { AdminLevel } from "@/lib/admin-types"
 
 export interface Crumb {
   label: string
@@ -74,7 +71,7 @@ export function AdminPage({
 }
 
 function TopBar({ crumbs }: { crumbs: Crumb[] }) {
-  const { me, level, setLevel } = useAdmin()
+  const { me, level, logout: signOut } = useAdmin()
   const router = useRouter()
   const [logout, setLogout] = React.useState(false)
 
@@ -118,14 +115,6 @@ function TopBar({ crumbs }: { crumbs: Crumb[] }) {
               <DropdownMenuLabel>{me.email}</DropdownMenuLabel>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>Pratinjau level (mock)</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={level} onValueChange={(v) => setLevel(v as AdminLevel)}>
-                <DropdownMenuRadioItem value="superadmin">Superadmin</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="staff">Staff</DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onClick={() => setLogout(true)}>
               <IconLogout /> Keluar
             </DropdownMenuItem>
@@ -142,7 +131,7 @@ function TopBar({ crumbs }: { crumbs: Crumb[] }) {
         title="Keluar dari panel admin?"
         description="Anda perlu masuk lagi dengan Google untuk membuka panel ini."
         confirmLabel="Keluar"
-        onConfirm={() => router.push("/admin/masuk")}
+        onConfirm={() => void signOut().then(() => router.push("/admin/masuk"))}
       />
     </header>
   )

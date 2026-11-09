@@ -5,9 +5,11 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { IconInfoCircle } from "@tabler/icons-react"
 
 import { formatRupiah } from "@/lib/format"
-import { ADMIN_CATEGORIES, ADMIN_PRODUCTS } from "@/lib/admin-mock"
-import { CATEGORIES } from "@/lib/mock-data"
+import { adminApi } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
 import type { AdminProduct } from "@/lib/admin-types"
+import { LoadError, formLevelError, handleApiError } from "@/components/app/feedback"
+import { TableSkeleton } from "@/components/admin/data-table"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -21,23 +23,48 @@ import { CharCount, FileUpload, RupiahInput, SuffixInput, TagInput } from "@/com
 import { AdminPage } from "@/components/admin/admin-page"
 import { AdminFormLayout, AdminNoteFields, FormSectionCard } from "@/components/admin/form-layout"
 import { EntityPicker } from "@/components/admin/pickers"
-import { umkmOptions } from "@/components/admin/options"
-import { ConflictModal } from "@/components/admin/risky-action"
+import { useCategories, useUmkmOptions } from "@/components/admin/options"
 
-const ACTIVE_CATEGORIES = CATEGORIES.filter((c) => ADMIN_CATEGORIES.find((a) => a.name === c.name)?.is_active)
+/** API field → form error key. */
+const FIELD: Record<string, string> = {
+  umkm_id: "umkm",
+  photo_file_ids: "photos",
+  name: "name",
+  category_id: "category",
+  base_price: "base",
+  suggested_retail_price: "srp",
+  shelf_life_days: "shelf",
+  expiry_date: "shelf",
+}
+
+/** A14 loader: create (`?umkm_id=` prefills) or edit (`GET /admin/products/{id}`). */
+export function ProductAdminFormPage({ id }: { id?: string }) {
+  const q = useApi<AdminProduct>("admin", id ? `/admin/products/${id}` : null)
+  if (!id) return <ProductAdminForm />
+  if (!q.data)
+    return (
+      <AdminPage breadcrumb={[{ label: "Produk", href: "/admin/produk" }]} title="Ubah produk">
+        {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref="/admin/produk" backLabel="Kembali ke Produk" /> : <TableSkeleton />}
+      </AdminPage>
+    )
+  return <ProductAdminForm key={q.data.id} product={q.data} />
+}
 
 /** A14 · Form produk (admin). */
-export function ProductAdminForm({ product: p }: { product?: AdminProduct }) {
+function ProductAdminForm({ product: p }: { product?: AdminProduct }) {
   const router = useRouter()
   const params = useSearchParams()
   const edit = !!p
-  const everApplied = !!p && p.applications.length > 0
-  const inOpenApplication = !!p && p.applications.some((a) => a.status === "submitted" || a.status === "approved")
+  const everApplied = !!p?.has_applications
+  const umkmOptions = useUmkmOptions()
+  const ACTIVE_CATEGORIES = useCategories().filter((c) => c.is_active || c.id === p?.category.id)
 
   const [umkmId, setUmkmId] = React.useState<string | null>(p?.umkm.id ?? params.get("umkm_id"))
-  const [photos, setPhotos] = React.useState(p?.photo_count ?? 0)
+  const [photoIds, setPhotoIds] = React.useState<string[]>(p?.photo_file_ids ?? [])
+  const photos = photoIds.length
   const [name, setName] = React.useState(p?.name ?? "")
-  const [categoryId, setCategoryId] = React.useState(p?.category.id.toString() ?? "")
+  const [categoryId, setCategoryId] = React.useState(p?.category.id ?? "")
+  const [formError, setFormError] = React.useState<string | undefined>()
   const [description, setDescription] = React.useState(p?.description ?? "")
   const [tags, setTags] = React.useState<string[]>(p?.tags ?? [])
   const [base, setBase] = React.useState<number | null>(p?.base_price ?? null)
@@ -46,7 +73,6 @@ export function ProductAdminForm({ product: p }: { product?: AdminProduct }) {
   const [shelfDays, setShelfDays] = React.useState(p?.shelf_life_days?.toString() ?? "")
   const [expiry, setExpiry] = React.useState(p?.expiry_date ?? "")
   const [active, setActive] = React.useState(p?.is_active ?? true)
-  const [conflict, setConflict] = React.useState(false)
   const [reason, setReason] = React.useState("")
   const [notify, setNotify] = React.useState(true)
   const [errors, setErrors] = React.useState<Record<string, string>>({})
@@ -84,12 +110,51 @@ export function ProductAdminForm({ product: p }: { product?: AdminProduct }) {
       document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
       return
     }
+    void save()
+  }
+
+  const save = async () => {
     setSaving(true)
-    setTimeout(() => {
+    setFormError(undefined)
+    const body = {
+      umkm_id: umkmId,
+      photo_file_ids: photoIds,
+      name: name.trim(),
+      category_id: categoryId,
+      description,
+      tags,
+      base_price: base,
+      suggested_retail_price: srp,
+      shelf_life_days: shelfMode === "days" ? Number(shelfDays) : null,
+      expiry_date: shelfMode === "date" ? expiry : null,
+      is_active: active,
+      admin_reason: reason || undefined,
+      notify_user: notify,
+    }
+    try {
+      const saved = edit
+        ? await adminApi.patch<AdminProduct>(`/admin/products/${p!.id}`, body)
+        : await adminApi.post<AdminProduct>("/admin/products", body)
       toast.add({ title: edit ? "Perubahan disimpan." : "Produk dibuat.", type: "success" })
       setDirty(false)
-      router.push(`/admin/produk/${p?.id ?? ADMIN_PRODUCTS[0].id}`)
-    }, 700)
+      void revalidate("admin", "/admin/products", "/admin/files", "/admin/audit-logs", "/admin/dashboard")
+      router.push(`/admin/produk/${saved.id}`)
+    } catch (err) {
+      setSaving(false)
+      // 409 has_active_relations (deactivating a product in an open application) → shared dialog.
+      handleApiError(err, {
+        admin: true,
+        onFieldErrors: (fields, apiErr) => {
+          const mapped: Record<string, string> = {}
+          for (const [k, v] of Object.entries(fields)) if (FIELD[k.split(".")[0]]) mapped[FIELD[k.split(".")[0]]] ??= v
+          setErrors(mapped)
+          setFormError(formLevelError(apiErr, Object.keys(FIELD)) ?? (Object.keys(mapped).length ? undefined : apiErr.message))
+          const first = Object.keys(mapped)[0]
+          if (first) document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+          return true
+        },
+      })
+    }
   }
 
   return (
@@ -105,6 +170,7 @@ export function ProductAdminForm({ product: p }: { product?: AdminProduct }) {
         onSubmit={submit}
         cancelHref={p ? `/admin/produk/${p.id}` : "/admin/produk"}
       >
+        {formError && <p className="bg-destructive/10 px-5 py-4 text-sm text-destructive">{formError}</p>}
         <FormSectionCard id="umkm" title="0 · UMKM">
           <div id="f-umkm">
             <FormField
@@ -123,7 +189,7 @@ export function ProductAdminForm({ product: p }: { product?: AdminProduct }) {
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <IconInfoCircle className="size-4" /> Foto yang diunggah admin akan menjadi milik UMKM ini.
             </p>
-            <FileUpload max={5} initialCount={p?.photo_count ?? 0} onCountChange={(n) => { setPhotos(n); setDirty(true) }} />
+            <FileUpload purpose="product_photo" client={adminApi} max={5} initial={p?.photos ?? []} onChange={setPhotoIds} />
             {errors.photos && <p className="text-sm text-destructive">{errors.photos}</p>}
           </div>
         </FormSectionCard>
@@ -213,13 +279,7 @@ export function ProductAdminForm({ product: p }: { product?: AdminProduct }) {
             </span>
             <Switch
               checked={active}
-              onCheckedChange={(v) => {
-                if (!v && inOpenApplication) {
-                  setConflict(true)
-                  return
-                }
-                touch(setActive)(v)
-              }}
+              onCheckedChange={(v) => touch(setActive)(v)}
             />
           </label>
         </FormSectionCard>
@@ -235,14 +295,6 @@ export function ProductAdminForm({ product: p }: { product?: AdminProduct }) {
           </Alert>
         )}
       </AdminFormLayout>
-      <ConflictModal
-        open={conflict}
-        onOpenChange={setConflict}
-        message="Produk ini masih ada di pengajuan yang diajukan atau disetujui, jadi belum bisa dinonaktifkan."
-        links={(p?.applications ?? [])
-          .filter((a) => a.status === "submitted" || a.status === "approved")
-          .map((a) => ({ label: `Pengajuan ${a.id.slice(0, 8)} · ${a.store}`, href: `/admin/pengajuan/${a.id}` }))}
-      />
     </AdminPage>
   )
 }

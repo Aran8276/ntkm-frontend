@@ -92,7 +92,7 @@ export function StockChip({
   quantity,
   mode,
 }: {
-  status: StockRow["stock_status"]
+  status: StockRow["stock_status"] | null
   quantity?: number | null
   mode?: StockRow["stock_mode"]
 }) {

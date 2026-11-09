@@ -7,7 +7,7 @@ import { IconArrowRight, IconMapPin } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
 import { DAYS, DAY_LABEL, formatDate, formatTimeRange } from "@/lib/format"
-import type { AdminApplication, AuditLog } from "@/lib/admin-types"
+import type { AdminApplicationRow, AuditLog } from "@/lib/admin-types"
 import type { OperatingHour } from "@/lib/types"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ApplicationStatusChip } from "@/components/app/status"
@@ -68,7 +68,7 @@ export function MiniTable<T>({
   )
 }
 
-export function slotLabel(a: Pick<AdminApplication, "delivery_slot">) {
+export function slotLabel(a: Pick<AdminApplicationRow, "delivery_slot">) {
   return a.delivery_slot ? `${formatDate(a.delivery_slot.date)}, ${formatTimeRange(a.delivery_slot.start, a.delivery_slot.end)}` : null
 }
 
@@ -78,7 +78,7 @@ export function ApplicationsMiniTable({
   counterpart,
   showProducts,
 }: {
-  rows: AdminApplication[]
+  rows: AdminApplicationRow[]
   counterpart: "store" | "umkm"
   showProducts?: boolean
 }) {
@@ -95,8 +95,13 @@ export function ApplicationsMiniTable({
           cell: (a) => (counterpart === "store" ? a.store.name : a.umkm.business_name),
         },
         ...(showProducts
-          ? [{ header: "Produk", cell: (a: AdminApplication) => a.items.map((i) => i.product.name).join(", "), className: "max-w-64 truncate" }]
-          : [{ header: "Peluang", cell: (a: AdminApplication) => <span className="block max-w-56 truncate">{a.opportunity.title}</span> }]),
+          ? [
+              {
+                header: "Produk",
+                cell: (a: AdminApplicationRow) => `${a.items_count} produk${a.approved_count ? ` · ${a.approved_count} disetujui` : ""}`,
+              },
+            ]
+          : [{ header: "Peluang", cell: (a: AdminApplicationRow) => <span className="block max-w-56 truncate">{a.opportunity.title}</span> }]),
         {
           header: "Status",
           cell: (a) => (
@@ -124,12 +129,12 @@ export function AuditMiniTable({ rows, empty = "Belum ada tindakan admin." }: { 
       columns={[
         { header: "Waktu", cell: (l) => <DateTime value={l.created_at} /> },
         { header: "Admin", cell: (l) => l.admin.name },
-        { header: "Aksi", cell: (l) => AUDIT_ACTION_LABEL[l.action] },
+        { header: "Aksi", cell: (l) => AUDIT_ACTION_LABEL[l.action] ?? l.action },
         {
           header: "Objek",
           cell: (l) => (
             <span className="flex flex-col">
-              <span className="text-xs text-muted-foreground">{TARGET_LABEL[l.target_type]}</span>
+              <span className="text-xs text-muted-foreground">{TARGET_LABEL[l.target_type] ?? l.target_type}</span>
               <span className="max-w-56 truncate">{l.target_label}</span>
             </span>
           ),

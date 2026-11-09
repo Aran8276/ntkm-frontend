@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/dialog"
 import { FormField } from "@/components/app/form-field"
 import { CharCount } from "@/components/app/inputs"
+import { handleApiError } from "@/components/app/feedback"
+import { isApiError } from "@/lib/api"
 
 export interface RiskyResult {
   reason: string
@@ -62,8 +64,10 @@ export function RiskyActionModal({
   destructive?: boolean
   /** Extra fields valid? */
   canConfirm?: boolean
-  onConfirm: (result: RiskyResult) => void
+  /** Runs the request; a rejected promise keeps the modal open (fields stay filled). */
+  onConfirm: (result: RiskyResult) => void | Promise<void>
 }) {
+  const [error, setError] = React.useState<string | null>(null)
   const [text, setText] = React.useState("")
   const [notifyUser, setNotifyUser] = React.useState(true)
   const [typed, setTyped] = React.useState("")
@@ -78,20 +82,32 @@ export function RiskyActionModal({
       setNotifyUser(true)
       setTyped("")
       setBusy(false)
+      setError(null)
     }
   }
 
   const reasonOk = reason !== "required" || text.trim().length >= 5
   const valid = canConfirm && reasonOk && text.length <= 500 && (!confirmText || typed.trim() === confirmText)
 
-  const submit = () => {
+  const submit = async () => {
     if (!valid || busy) return
     setBusy(true)
-    setTimeout(() => {
-      onConfirm({ reason: text.trim(), notify: notify ? notifyUser : false })
+    setError(null)
+    try {
+      await onConfirm({ reason: text.trim(), notify: notify ? notifyUser : false })
       setBusy(false)
       onOpenChange(false)
-    }, 600)
+    } catch (e) {
+      setBusy(false)
+      if (isApiError(e) && e.code === "validation_error") {
+        const fields = e.fieldErrors()
+        setError(fields.admin_reason ?? Object.values(fields)[0] ?? e.message)
+        return
+      }
+      // 409 / 403 etc.: show the shared dialog or toast, close this modal.
+      handleApiError(e, { admin: true })
+      if (isApiError(e) && ["conflict", "has_active_relations", "not_found"].includes(e.code)) onOpenChange(false)
+    }
   }
 
   return (
@@ -101,7 +117,7 @@ export function RiskyActionModal({
           className="contents"
           onSubmit={(e) => {
             e.preventDefault()
-            submit()
+            void submit()
           }}
         >
           <DialogHeader>
@@ -121,6 +137,7 @@ export function RiskyActionModal({
           </DialogHeader>
 
           <div className="flex flex-col gap-6">
+            {error && <p className="bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</p>}
             {children}
             {reason !== "none" && (
               <FormField
@@ -139,7 +156,7 @@ export function RiskyActionModal({
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault()
-                      submit()
+                      void submit()
                     }
                   }}
                 />

@@ -5,20 +5,22 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { IconBox, IconPlus, IconSearch } from "@tabler/icons-react"
 
-import { CATEGORIES, MY_PRODUCTS } from "@/lib/mock-data"
-import type { Product } from "@/lib/types"
+import { api, isApiError, type Paginated } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { Category, Product } from "@/lib/types"
 import { buttonVariants } from "@/components/ui/button"
 import { toast } from "@/components/ui/toast"
 import { useQueryState } from "@/hooks/use-query-state"
 import { AppShell } from "@/components/app/app-shell"
-import { ConfirmDialog, EmptyState, FilterChips, PageHeading } from "@/components/app/blocks"
+import { ConfirmDialog, EmptyState, FilterChips, ListSkeleton, PageHeading } from "@/components/app/blocks"
+import { LoadError, handleApiError } from "@/components/app/feedback"
 import { ProductCard } from "@/components/app/cards"
 
 type Tab = "active" | "archived"
 
+/** P13 · Produk saya: `GET /me/products?search=&category=` (both tabs at once for the counts). */
 export function ProductList() {
   const router = useRouter()
-  const [products, setProducts] = React.useState(MY_PRODUCTS)
   const [tab, setTab] = useQueryState<Tab>("tab", "active")
   const [category, setCategory] = useQueryState<string>("kategori", "all")
   const [query, setQuery] = React.useState("")
@@ -32,15 +34,28 @@ export function ProductList() {
     return () => clearTimeout(t)
   }, [query])
 
-  const list = products.filter(
-    (p) =>
-      p.is_active === (tab === "active") &&
-      (category === "all" || String(p.category.id) === category) &&
-      (!search || p.name.toLowerCase().includes(search))
-  )
+  const categoriesQ = useApi<Category[]>("user", "/categories")
+  const CATEGORIES = categoriesQ.data ?? []
+  const q = useApi<Paginated<Product>>("user", "/me/products", {
+    search: search || undefined,
+    category: category === "all" ? undefined : category,
+    page_size: 100,
+  })
+  const products = q.data?.results ?? []
+  const list = products.filter((p) => p.is_active === (tab === "active"))
 
-  const setActive = (p: Product, active: boolean) =>
-    setProducts((prev) => prev.map((x) => (x.id === p.id ? { ...x, is_active: active } : x)))
+  const setActive = async (p: Product, active: boolean) => {
+    try {
+      if (active) await api.patch(`/me/products/${p.id}`, { is_active: true })
+      else await api.del(`/me/products/${p.id}`)
+      toast.add({ title: active ? "Produk diaktifkan lagi." : "Produk diarsipkan.", type: "success" })
+      await q.reload()
+      void revalidate("user", "/me/products")
+    } catch (e) {
+      if (isApiError(e) && (e.code === "conflict" || e.code === "has_active_relations")) setBlocked(true)
+      else handleApiError(e, { onReload: q.reload })
+    }
+  }
 
   return (
     <AppShell role="umkm" title="Produk" width="wide">
@@ -68,7 +83,7 @@ export function ProductList() {
           label="Kategori"
           value={category}
           onChange={setCategory}
-          options={[{ value: "all", label: "Semua kategori" }, ...CATEGORIES.map((c) => ({ value: String(c.id), label: c.name }))]}
+          options={[{ value: "all", label: "Semua kategori" }, ...CATEGORIES.map((c) => ({ value: c.slug, label: c.name }))]}
         />
       </div>
 
@@ -94,7 +109,11 @@ export function ProductList() {
         ))}
       </div>
 
-      {list.length ? (
+      {q.error && !q.data ? (
+        <LoadError error={q.error} onRetry={q.reload} />
+      ) : q.loading ? (
+        <ListSkeleton rows={4} />
+      ) : list.length ? (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {list.map((p) => (
             <ProductCard
@@ -110,10 +129,7 @@ export function ProductList() {
                   : [
                       {
                         label: "Aktifkan lagi",
-                        onSelect: () => {
-                          setActive(p, true)
-                          toast.add({ title: "Produk diaktifkan lagi.", type: "success" })
-                        },
+                        onSelect: () => void setActive(p, true),
                       },
                     ]
               }
@@ -145,13 +161,7 @@ export function ProductList() {
         confirmLabel="Ya, arsipkan"
         destructive
         onConfirm={() => {
-          if (!archiving) return
-          // Mock 409: product still in an active application.
-          if (archiving.active_placements > 0) setBlocked(true)
-          else {
-            setActive(archiving, false)
-            toast.add({ title: "Produk diarsipkan.", type: "success" })
-          }
+          if (archiving) void setActive(archiving, false)
           setArchiving(null)
         }}
       />

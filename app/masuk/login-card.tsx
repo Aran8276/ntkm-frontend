@@ -3,11 +3,32 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
-import { IconAlertCircle, IconBuildingStore, IconPlant2 } from "@tabler/icons-react"
+import { IconAlertCircle, IconBuildingStore, IconInfoCircle, IconPlant2 } from "@tabler/icons-react"
 
+import { api, isApiError } from "@/lib/api"
+import type { Me, Role } from "@/lib/types"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Spinner } from "@/components/ui/spinner"
 import { Logo } from "@/components/app/logo"
+import { homeFor } from "@/components/app/app-shell"
+import { useSession } from "@/components/app/providers"
+import { DEV_LOGIN, DevLoginForm, GOOGLE_CLIENT_ID, GoogleButton, signIn } from "@/components/app/sign-in"
+
+const DEMO_ACCOUNTS = [
+  { email: "rina.wulandari@contoh.id", label: "Rina (toko + UMKM)" },
+  { email: "hendra.berkah@contoh.id", label: "Hendra (toko)" },
+  { email: "agus.sanan@contoh.id", label: "Agus (UMKM)" },
+]
+
+const REASONS: Record<string, string> = {
+  expired: "Sesi Anda berakhir, silakan masuk lagi.",
+  suspended: "Akun Anda dinonaktifkan. Hubungi admin untuk informasi lebih lanjut.",
+}
+
+/** Only same-origin app paths are allowed as `next`. */
+function safeNext(next: string | null) {
+  return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/admin") ? next : null
+}
 
 /** Official multi-colour Google "G" (also used by the admin login, A01). */
 export function GoogleMark() {
@@ -24,21 +45,43 @@ export function GoogleMark() {
 export function LoginCard() {
   const params = useSearchParams()
   const router = useRouter()
+  const { me, role: activeRole, setRole, reloadMe } = useSession()
   const role = params.get("role")
-  const next = params.get("next")
-  const [state, setState] = React.useState<"idle" | "loading" | "error" | "popup">(
+  const next = safeNext(params.get("next"))
+  const reason = params.get("reason")
+  const [state, setState] = React.useState<"idle" | "loading" | "error" | "popup" | "suspended">(
     params.get("error") === "popup" ? "popup" : params.get("error") ? "error" : "idle"
   )
 
-  const signIn = () => {
+  // Already signed in → dashboard of the active role.
+  const busy = state === "loading"
+  React.useEffect(() => {
+    if (me && !busy) router.replace(homeFor(me, activeRole))
+  }, [me, busy, activeRole, router])
+
+  const finish = async (user: Me) => {
+    // Spec P02 flow: roles empty + ?role → PUT /me/roles → onboarding; empty → P03;
+    // onboarding unfinished → P04/P05; otherwise ?next or the active dashboard.
+    if (!user.roles.length && (role === "store" || role === "umkm")) {
+      await api.put("/me/roles", { roles: [role] })
+      setRole(role as Role)
+      await reloadMe()
+      router.replace(role === "store" ? "/onboarding/toko" : "/onboarding/umkm")
+      return
+    }
+    if (user.roles.length === 1) setRole(user.roles[0])
+    const home = homeFor(user, activeRole)
+    router.replace(next && !home.startsWith("/onboarding") && home !== "/pilih-peran" ? next : home)
+  }
+
+  const run = async (credential: { id_token: string } | { email: string }) => {
     setState("loading")
-    // Mock: POST /auth/google → route per spec flow.
-    setTimeout(() => {
-      if (next) router.push(next)
-      else if (role === "store") router.push("/onboarding/toko")
-      else if (role === "umkm") router.push("/onboarding/umkm")
-      else router.push("/pilih-peran")
-    }, 900)
+    try {
+      const res = await signIn("user", credential)
+      await finish(res.user)
+    } catch (e) {
+      setState(isApiError(e) && e.code === "account_suspended" ? "suspended" : "error")
+    }
   }
 
   return (
@@ -58,35 +101,41 @@ export function LoginCard() {
         </div>
       )}
 
-      {(state === "error" || state === "popup") && (
+      {reason && REASONS[reason] && state === "idle" && (
+        <Alert>
+          <IconInfoCircle />
+          <AlertDescription>{REASONS[reason]}</AlertDescription>
+        </Alert>
+      )}
+
+      {(state === "error" || state === "popup" || state === "suspended") && (
         <Alert variant="destructive">
           <IconAlertCircle />
           <AlertDescription>
             {state === "popup"
               ? "Izinkan pop-up untuk masuk dengan Google."
-              : "Gagal masuk dengan Google. Silakan coba lagi."}
+              : state === "suspended"
+                ? REASONS.suspended
+                : "Gagal masuk dengan Google. Silakan coba lagi."}
           </AlertDescription>
         </Alert>
       )}
 
-      <button
-        type="button"
-        onClick={signIn}
-        disabled={state === "loading"}
-        className="flex h-11 w-full items-center justify-center gap-3 rounded-full border border-[#dadce0] bg-white px-4 text-sm font-medium text-[#1f1f1f] transition-colors outline-none hover:bg-[#f8faff] focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-70"
-      >
-        {state === "loading" ? (
-          <>
-            <Spinner className="size-4" />
-            Sedang masuk…
-          </>
-        ) : (
-          <>
-            <GoogleMark />
-            Masuk dengan Google
-          </>
-        )}
-      </button>
+      {state === "loading" ? (
+        <div className="flex h-11 w-full items-center justify-center gap-3 rounded-full border border-[#dadce0] bg-white px-4 text-sm font-medium text-[#1f1f1f]">
+          <Spinner className="size-4" />
+          Sedang masuk…
+        </div>
+      ) : GOOGLE_CLIENT_ID ? (
+        <GoogleButton onCredential={(id_token) => run({ id_token })} onLoadError={() => setState("popup")} />
+      ) : (
+        <div className="flex h-11 w-full items-center justify-center gap-3 rounded-full border border-[#dadce0] bg-white px-4 text-sm font-medium text-[#1f1f1f] opacity-60">
+          <GoogleMark />
+          Masuk dengan Google belum dikonfigurasi
+        </div>
+      )}
+
+      {DEV_LOGIN && <DevLoginForm accounts={DEMO_ACCOUNTS} disabled={state === "loading"} onSubmit={(email) => run({ email })} />}
 
       <div className="flex flex-col gap-4 border-t pt-6 text-sm text-muted-foreground">
         <p>

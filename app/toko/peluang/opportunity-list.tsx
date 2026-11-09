@@ -3,20 +3,25 @@
 import Link from "next/link"
 import { IconPlus, IconTargetArrow } from "@tabler/icons-react"
 
-import { MY_OPPORTUNITIES } from "@/lib/mock-data"
-import type { OpportunityStatus } from "@/lib/types"
+import type { Paginated } from "@/lib/api"
+import { useApi } from "@/lib/use-api"
+import type { Opportunity, OpportunityStatus } from "@/lib/types"
 import { buttonVariants } from "@/components/ui/button"
 import { useQueryState } from "@/hooks/use-query-state"
 import { AppShell } from "@/components/app/app-shell"
-import { EmptyState, FilterChips, PageHeading } from "@/components/app/blocks"
+import { EmptyState, FilterChips, ListSkeleton, PageHeading } from "@/components/app/blocks"
+import { LoadError } from "@/components/app/feedback"
 import { OpportunityCard } from "@/components/app/cards"
 
 type Tab = "all" | OpportunityStatus
 
 export function OpportunityList() {
   const [tab, setTab] = useQueryState<Tab>("tab", "all")
-  const items = MY_OPPORTUNITIES.filter((o) => tab === "all" || o.status === tab)
-  const count = (s: OpportunityStatus) => MY_OPPORTUNITIES.filter((o) => o.status === s).length
+  // P07 · GET /me/opportunities (all statuses; tabs filter on the client so counts stay exact).
+  const q = useApi<Paginated<Opportunity>>("user", "/me/opportunities", { page_size: 100 })
+  const all = q.data?.results ?? []
+  const items = all.filter((o) => tab === "all" || o.status === tab)
+  const count = (s: OpportunityStatus) => all.filter((o) => o.status === s).length
 
   return (
     <AppShell role="store" title="Peluang" width="wide">
@@ -39,7 +44,11 @@ export function OpportunityList() {
           { value: "closed", label: "Ditutup" },
         ]}
       />
-      {items.length ? (
+      {q.error && !q.data ? (
+        <LoadError error={q.error} onRetry={q.reload} />
+      ) : q.loading ? (
+        <ListSkeleton rows={4} />
+      ) : items.length ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {items.map((o) => (
             <OpportunityCard key={o.id} opportunity={o} side="store" href={`/toko/peluang/${o.id}`} />

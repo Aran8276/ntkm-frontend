@@ -16,7 +16,10 @@ import {
 } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
-import { ADMIN_NOTIFICATIONS, NOW_ISO } from "@/lib/admin-mock"
+import { addDaysIso } from "@/lib/format"
+import { adminApi } from "@/lib/api"
+import { revalidate } from "@/lib/use-api"
+import { handleApiError } from "@/components/app/feedback"
 import type { AdminNotification } from "@/lib/admin-types"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -33,7 +36,7 @@ import { AdminPage } from "@/components/admin/admin-page"
 import { BoolIcon, DataList, DateTime, EMAIL_STATUS, EmailStatusChip, TabBar } from "@/components/admin/admin-ui"
 import { DataTable } from "@/components/admin/data-table"
 import { EntityMultiPicker, SidePanel } from "@/components/admin/pickers"
-import { userOptions } from "@/components/admin/options"
+import { useUserOptions } from "@/components/admin/options"
 
 type NType = AdminNotification["type"]
 
@@ -50,7 +53,6 @@ export const NOTIF_TYPE: Record<NType, { label: string; icon: Icon; className: s
 }
 
 type Tab = "log" | "pengumuman"
-const daysAgo = (n: number) => new Date(new Date(NOW_ISO).getTime() - n * 86_400_000).toISOString()
 
 /** A21 · Notifikasi & pengumuman. */
 export function NotificationsAdmin() {
@@ -81,15 +83,22 @@ export function NotificationsAdmin() {
 
 function NotificationLog() {
   const { get, set } = useUrlParams()
-  const selected = ADMIN_NOTIFICATIONS.find((n) => n.id === get("id"))
+  const userOptions = useUserOptions()
+  const [now] = React.useState(() => new Date())
+  const daysAgo = (n: number) => addDaysIso(-n, now)
+  const [picked, setPicked] = React.useState<AdminNotification | null>(null)
+  const selected = picked && picked.id === get("id") ? picked : undefined
   const [resend, setResend] = React.useState(false)
 
   return (
     <>
       <DataTable<AdminNotification>
-        rows={ADMIN_NOTIFICATIONS}
+        endpoint="/admin/notifications"
         rowKey={(n) => n.id}
-        onRowClick={(n) => set({ id: n.id })}
+        onRowClick={(n) => {
+          setPicked(n)
+          set({ id: n.id })
+        }}
         filters={[
           { key: "user_id", label: "Penerima", searchable: true, options: userOptions, match: (n, v) => n.user.id === v },
           {
@@ -108,11 +117,10 @@ function NotificationLog() {
             key: "created_after",
             label: "Sejak",
             options: [
-              { value: "1", label: "24 jam terakhir" },
-              { value: "7", label: "7 hari terakhir" },
-              { value: "30", label: "30 hari terakhir" },
+              { value: daysAgo(1), label: "24 jam terakhir" },
+              { value: daysAgo(7), label: "7 hari terakhir" },
+              { value: daysAgo(30), label: "30 hari terakhir" },
             ],
-            match: (n, v) => n.created_at >= daysAgo(Number(v)),
           },
         ]}
         columns={[
@@ -176,11 +184,12 @@ function NotificationLog() {
                 },
                 {
                   label: "Objek terkait",
-                  value: selected.data ? (
-                    <Link href={selected.data.href} className="text-primary hover:underline">
-                      {selected.data.label}
-                    </Link>
-                  ) : null,
+                  value:
+                    typeof selected.data?.application_id === "string" ? (
+                      <Link href={`/admin/pengajuan/${selected.data.application_id}`} className="text-primary hover:underline">
+                        Pengajuan {selected.data.application_id.slice(0, 8)}
+                      </Link>
+                    ) : null,
                 },
                 { label: "Status email", value: <EmailStatusChip status={selected.email_status} /> },
                 { label: "Percobaan", value: selected.email_attempts },
@@ -203,7 +212,16 @@ function NotificationLog() {
         title="Kirim ulang email?"
         description={selected ? `Email “${selected.title}” akan dijadwalkan ulang ke ${selected.user.email}.` : undefined}
         confirmLabel="Kirim ulang"
-        onConfirm={() => toast.add({ title: "Email dijadwalkan ulang.", type: "success" })}
+        onConfirm={async () => {
+          try {
+            await adminApi.post(`/admin/notifications/${selected!.id}/resend-email`)
+            toast.add({ title: "Email dijadwalkan ulang.", type: "success" })
+            setPicked({ ...selected!, email_status: "pending" })
+            void revalidate("admin", "/admin/notifications", "/admin/dashboard")
+          } catch (e) {
+            handleApiError(e, { admin: true })
+          }
+        }}
       />
     </>
   )
@@ -219,8 +237,9 @@ function BroadcastForm({ onSent }: { onSent: () => void }) {
   const [errors, setErrors] = React.useState<Record<string, string>>({})
   const [confirm, setConfirm] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
+  const userOptions = useUserOptions()
 
-  const recipients = (stores ? 4 : 0) + (umkms ? 6 : 0) + users.length
+  const recipients = users.length
   const targetText =
     stores && umkms
       ? "Kirim ke semua toko dan UMKM aktif?"
@@ -241,18 +260,28 @@ function BroadcastForm({ onSent }: { onSent: () => void }) {
     if (!Object.keys(e).length) setConfirm(true)
   }
 
-  const send = () => {
+  const send = async () => {
     setBusy(true)
-    setTimeout(() => {
-      setBusy(false)
-      toast.add({ title: `Pengumuman dikirim ke ${recipients} pengguna.`, type: "success" })
+    try {
+      const res = await adminApi.post<{ recipients_count: number }>("/admin/notifications/broadcast", {
+        title: title.trim(),
+        body: body.trim(),
+        target: { roles: [...(stores ? ["store"] : []), ...(umkms ? ["umkm"] : [])], user_ids: users },
+        send_email: email,
+      })
+      toast.add({ title: `Pengumuman dikirim ke ${res.recipients_count} pengguna.`, type: "success" })
       setTitle("")
       setBody("")
       setStores(false)
       setUmkms(false)
       setUsers([])
+      void revalidate("admin", "/admin/notifications", "/admin/audit-logs")
       onSent()
-    }, 800)
+    } catch (e) {
+      handleApiError(e, { admin: true })
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -308,7 +337,7 @@ function BroadcastForm({ onSent }: { onSent: () => void }) {
           <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary" />
         </div>
       </Section>
-      <ConfirmDialog open={confirm} onOpenChange={setConfirm} title={targetText} description={`${recipients} penerima${email ? ", termasuk email" : ""}.`} confirmLabel="Kirim" onConfirm={send} />
+      <ConfirmDialog open={confirm} onOpenChange={setConfirm} title={targetText} description={stores || umkms ? (email ? "Termasuk salinan email." : undefined) : `${recipients} penerima${email ? ", termasuk email" : ""}.`} confirmLabel="Kirim" onConfirm={() => void send()} />
     </div>
   )
 }

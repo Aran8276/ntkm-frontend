@@ -1,10 +1,5 @@
 import type { Commission, Day, ReceivingSlot } from "@/lib/types"
 
-/**
- * Fixed "now" for the mock UI so server and client render identical relative
- * times (no hydration mismatch). Replace with `new Date()` once data is live.
- */
-export const NOW = new Date("2026-11-04T16:00:00+07:00")
 
 const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000
 
@@ -54,6 +49,31 @@ function parts(input: string | Date) {
 
 const pad = (n: number) => String(n).padStart(2, "0")
 
+/** Today in Asia/Jakarta as `YYYY-MM-DD`. */
+export function todayIso(now: Date = new Date()) {
+  const p = parts(now)
+  return `${p.year}-${pad(p.month + 1)}-${pad(p.date)}`
+}
+
+/** `YYYY-MM-DD` (Asia/Jakarta) `days` after `from`. */
+export function addDaysIso(days: number, from: Date = new Date()) {
+  return todayIso(new Date(from.getTime() + days * 86_400_000))
+}
+
+/** ISO timestamp `ms` before now. */
+export function agoIso(ms: number, now: Date = new Date()) {
+  return new Date(now.getTime() - ms).toISOString()
+}
+
+/** "Sambal & Bumbu" → "sambal-dan-bumbu" */
+export function slugify(s: string) {
+  return s
+    .toLowerCase()
+    .replace(/&/g, "dan")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+}
+
 /** 12500 → "Rp12.500" */
 export function formatRupiah(value: number) {
   const sign = value < 0 ? "-" : ""
@@ -91,7 +111,7 @@ export function formatTimeRange(start: string, end: string) {
 }
 
 /** ISO → "5 menit lalu", "2 jam lalu", "kemarin", "3 hari lalu", full date after 7 days */
-export function formatRelative(input: string | Date, now: Date = NOW) {
+export function formatRelative(input: string | Date, now: Date = new Date()) {
   const then = new Date(input)
   const diffMin = Math.floor((now.getTime() - then.getTime()) / 60_000)
   if (diffMin < 1) return "baru saja"
@@ -104,7 +124,7 @@ export function formatRelative(input: string | Date, now: Date = NOW) {
 }
 
 /** Grouping bucket for notification lists. */
-export function relativeDayBucket(input: string | Date, now: Date = NOW) {
+export function relativeDayBucket(input: string | Date, now: Date = new Date()) {
   const dayDiff = parts(now).dayIndex - parts(input).dayIndex
   if (dayDiff <= 0) return "Hari ini"
   if (dayDiff === 1) return "Kemarin"
@@ -112,7 +132,7 @@ export function relativeDayBucket(input: string | Date, now: Date = NOW) {
 }
 
 /** "Hari ini" / "Besok" / null for an upcoming date. */
-export function upcomingDayLabel(input: string | Date, now: Date = NOW) {
+export function upcomingDayLabel(input: string | Date, now: Date = new Date()) {
   const dayDiff = parts(input).dayIndex - parts(now).dayIndex
   if (dayDiff === 0) return "Hari ini"
   if (dayDiff === 1) return "Besok"
@@ -120,7 +140,7 @@ export function upcomingDayLabel(input: string | Date, now: Date = NOW) {
 }
 
 /** Today's greeting date, e.g. "Rabu, 4 Nov 2026". */
-export function formatToday(now: Date = NOW) {
+export function formatToday(now: Date = new Date()) {
   return formatDateLong(now)
 }
 

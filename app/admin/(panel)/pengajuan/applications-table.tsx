@@ -3,9 +3,8 @@
 import * as React from "react"
 import { IconPlus } from "@tabler/icons-react"
 
-import { formatDate } from "@/lib/format"
-import { ADMIN_APPLICATIONS, NOW_ISO, TODAY } from "@/lib/admin-mock"
-import type { AdminApplication } from "@/lib/admin-types"
+import { addDaysIso, agoIso, formatDate, todayIso } from "@/lib/format"
+import type { AdminApplicationRow } from "@/lib/admin-types"
 import type { ApplicationStatus } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { APPLICATION_STATUS, ApplicationStatusChip } from "@/components/app/status"
@@ -13,21 +12,26 @@ import { AdminPage } from "@/components/admin/admin-page"
 import { CellLink, DateTime, Dash, OverrideMark } from "@/components/admin/admin-ui"
 import { DataTable } from "@/components/admin/data-table"
 import { slotLabel } from "@/components/admin/embedded"
-import { opportunityOptions, storeOptions, umkmOptions } from "@/components/admin/options"
+import { useOpportunityOptions, useStoreOptions, useUmkmOptions } from "@/components/admin/options"
 import { CreateApplicationModal } from "./create-application-modal"
-
-const H48_AGO = new Date(new Date(NOW_ISO).getTime() - 48 * 3600_000).toISOString()
-const daysAgo = (n: number) => new Date(new Date(NOW_ISO).getTime() - n * 86_400_000).toISOString()
 
 /** A15 · Pengajuan. */
 export function ApplicationsTable() {
   const [creating, setCreating] = React.useState(false)
-  const deliveryDates = [...new Set(ADMIN_APPLICATIONS.map((a) => a.delivery_slot?.date).filter(Boolean) as string[])].sort().reverse()
+  const storeOptions = useStoreOptions()
+  const umkmOptions = useUmkmOptions()
+  const opportunityOptions = useOpportunityOptions()
+  // Time-based views are fixed when the page opens.
+  const [now] = React.useState(() => new Date())
+  const TODAY = todayIso(now)
+  const H48_AGO = agoIso(48 * 3600_000, now)
+  const daysAgo = (n: number) => addDaysIso(-n, now)
+  const deliveryDates = Array.from({ length: 21 }, (_, i) => addDaysIso(i - 7, now)).reverse()
 
   return (
     <AdminPage title="Pengajuan" description="Semua pengajuan kerja sama antara UMKM dan toko.">
-      <DataTable<AdminApplication>
-        rows={ADMIN_APPLICATIONS}
+      <DataTable<AdminApplicationRow>
+        endpoint="/admin/applications"
         rowKey={(a) => a.id}
         rowHref={(a) => `/admin/pengajuan/${a.id}`}
         defaultOrdering="-created_at"
@@ -36,11 +40,16 @@ export function ApplicationsTable() {
           text: (a) => `${a.store.name} ${a.umkm.business_name} ${a.opportunity.title}`,
         }}
         quickTabs={[
-          { value: "all", label: "Semua", match: () => true },
-          { value: "waiting", label: "Menunggu > 48 jam", match: (a) => a.status === "submitted" && a.created_at < H48_AGO, count: true },
-          { value: "today", label: "Antar hari ini", match: (a) => a.delivery_slot?.date === TODAY, count: true },
-          { value: "selling", label: "Sedang dijual", match: (a) => a.status === "received" },
-          { value: "override", label: "Ada override", match: (a) => a.has_override },
+          { value: "all", label: "Semua" },
+          {
+            value: "waiting",
+            label: "Menunggu > 48 jam",
+            query: { status: "submitted", created_before: H48_AGO, ordering: "created_at" },
+            count: true,
+          },
+          { value: "today", label: "Antar hari ini", query: { delivery_date: TODAY }, count: true },
+          { value: "selling", label: "Sedang dijual", query: { status: "received" } },
+          { value: "override", label: "Ada override", query: { has_override: true } },
         ]}
         filters={[
           {
@@ -56,12 +65,12 @@ export function ApplicationsTable() {
           {
             key: "created_after",
             label: "Diajukan",
+            // Values are dates (`created_after=YYYY-MM-DD`), labels the relative range.
             options: [
-              { value: "7", label: "7 hari terakhir" },
-              { value: "30", label: "30 hari terakhir" },
-              { value: "90", label: "90 hari terakhir" },
+              { value: daysAgo(7), label: "7 hari terakhir" },
+              { value: daysAgo(30), label: "30 hari terakhir" },
+              { value: daysAgo(90), label: "90 hari terakhir" },
             ],
-            match: (a, v) => a.created_at >= daysAgo(Number(v)),
           },
           {
             key: "delivery_date",
@@ -84,20 +93,17 @@ export function ApplicationsTable() {
           {
             key: "items",
             header: "Produk",
-            cell: (a) => {
-              const approved = a.items.filter((i) => i.decision === "approved").length
-              return (
-                <span className="tabular-nums">
-                  {a.items.length}
-                  {a.status !== "submitted" && <span className="text-muted-foreground"> · {approved} disetujui</span>}
-                </span>
-              )
-            },
+            cell: (a) => (
+              <span className="tabular-nums">
+                {a.items_count}
+                {a.status !== "submitted" && <span className="text-muted-foreground"> · {a.approved_count} disetujui</span>}
+              </span>
+            ),
           },
           {
-            key: "slot",
+            key: "delivery_slot_start",
             header: "Slot antar",
-            sort: (a) => (a.delivery_slot ? `${a.delivery_slot.date}${a.delivery_slot.start}` : null),
+            sort: (a) => a.delivery_slot?.start_at ?? null,
             cell: (a) => slotLabel(a) ?? <Dash />,
           },
           { key: "status", header: "Status", cell: (a) => <ApplicationStatusChip status={a.status} /> },

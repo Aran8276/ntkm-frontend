@@ -133,20 +133,45 @@ export function StatTile({
   )
 }
 
-/** Muted square used in place of photos/logos (mock UI has no images). */
+/** Stat number, skeleton while its list is loading. */
+export function Count({ n }: { n: number | undefined }) {
+  return n == null ? <Skeleton className="inline-block h-8 w-10 align-middle" /> : <>{n}</>
+}
+
+/** Photo/logo square; falls back to an icon or initials when there is no image. */
 export function Thumb({
   name,
   kind = "product",
   size = "default",
+  src,
   className,
 }: {
   name?: string
   kind?: "product" | "store" | "umkm" | "initials"
   size?: "sm" | "default" | "lg"
+  /** Image URL from the API (`photo_url`, `logo_url`, `image_url`). */
+  src?: string | null
   className?: string
 }) {
   const icons: Record<string, Icon> = { product: IconBox, store: IconBuildingStore, umkm: IconPlant2 }
   const Ico = icons[kind]
+  if (src)
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- user uploads served by the API host
+      <img
+        src={src}
+        alt=""
+        aria-hidden
+        loading="lazy"
+        className={cn(
+          "shrink-0 bg-muted object-cover",
+          size === "sm" && "size-9",
+          size === "default" && "size-12",
+          size === "lg" && "size-16",
+          className
+        )}
+      />
+    )
   return (
     <span
       className={cn(
@@ -357,6 +382,18 @@ export function PageSkeleton() {
         <Skeleton className="h-40 w-full bg-background" />
         <Skeleton className="h-64 w-full bg-background" />
       </div>
+    </div>
+  )
+}
+
+/** Detail-page skeleton for use inside <AppShell> while data loads. */
+export function PageSkeletonBody() {
+  return (
+    <div className="flex flex-col gap-6" aria-busy>
+      <Skeleton className="h-4 w-24 bg-background" />
+      <Skeleton className="h-8 w-3/4 bg-background" />
+      <Skeleton className="h-40 w-full bg-background" />
+      <Skeleton className="h-64 w-full bg-background" />
     </div>
   )
 }

@@ -4,7 +4,6 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { IconPlus } from "@tabler/icons-react"
 
-import { ADMIN_UMKMS } from "@/lib/admin-mock"
 import type { AdminUmkm } from "@/lib/admin-types"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -32,7 +31,7 @@ export function UmkmsTable() {
   return (
     <AdminPage title="UMKM" description="Profil usaha peserta pilot dan status legalitasnya.">
       <DataTable<AdminUmkm>
-        rows={ADMIN_UMKMS}
+        endpoint="/admin/umkms"
         rowKey={(u) => u.id}
         rowHref={(u) => `/admin/pengguna/${u.owner.id}?tab=umkm`}
         isDeleted={(u) => !!u.deleted_at}
@@ -62,7 +61,7 @@ export function UmkmsTable() {
             sort: (u) => u.business_name,
             cell: (u) => (
               <span className="flex items-center gap-3">
-                <Thumb kind="umkm" size="sm" />
+                <Thumb kind="umkm" size="sm" src={u.logo_url} />
                 <span className="font-medium">{u.business_name}</span>
                 {u.deleted_at && <DeletedChip />}
               </span>
@@ -90,8 +89,8 @@ export function UmkmsTable() {
           { label: "Ubah", onSelect: () => router.push(`/admin/umkm/${u.id}/ubah`) },
           { label: "Verifikasi legalitas", onSelect: () => router.push(`/admin/verifikasi?umkm=${u.id}`) },
           u.deleted_at
-            ? { label: "Pulihkan profil", onSelect: () => profile.open("umkm", "restore", u.business_name) }
-            : { label: "Hapus profil", onSelect: () => profile.open("umkm", "delete", u.business_name), destructive: true },
+            ? { label: "Pulihkan profil", onSelect: () => profile.open("umkm", "restore", { id: u.id, name: u.business_name }) }
+            : { label: "Hapus profil", onSelect: () => profile.open("umkm", "delete", { id: u.id, name: u.business_name }), destructive: true },
         ]}
         emptyText="Belum ada UMKM terdaftar."
         emptyAction={create}

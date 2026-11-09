@@ -6,8 +6,11 @@ import { IconFileTypePdf, IconFiles, IconPhoto, IconTrash } from "@tabler/icons-
 
 import { cn } from "@/lib/utils"
 import { formatDate } from "@/lib/format"
-import { ADMIN_FILES } from "@/lib/admin-mock"
-import type { FilePurpose } from "@/lib/admin-types"
+import { adminApi, type Paginated } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { AdminFile, FilePurpose, FileUsage } from "@/lib/admin-types"
+import { LoadError } from "@/components/app/feedback"
+import { TableSkeleton } from "@/components/admin/data-table"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
@@ -18,7 +21,7 @@ import { useUrlParams } from "@/hooks/use-url-params"
 import { AdminPage } from "@/components/admin/admin-page"
 import { DataList, DateTime, DeletedChip } from "@/components/admin/admin-ui"
 import { DocumentViewer, EntityPicker, SidePanel } from "@/components/admin/pickers"
-import { userOptions } from "@/components/admin/options"
+import { useUserOptions } from "@/components/admin/options"
 import { RiskyActionModal } from "@/components/admin/risky-action"
 
 export const PURPOSE_LABEL: Record<FilePurpose, string> = {
@@ -28,7 +31,14 @@ export const PURPOSE_LABEL: Record<FilePurpose, string> = {
   legal_document: "Dokumen legalitas",
 }
 
-/** A20 · File. */
+/** Where a file is used → admin page. */
+function usageHref(u: FileUsage, ownerId: string) {
+  if (u.type === "product") return `/admin/produk/${u.id}`
+  if (u.type === "store") return `/admin/pengguna/${u.owner_id ?? ownerId}?tab=toko`
+  return `/admin/pengguna/${u.owner_id ?? ownerId}?tab=umkm`
+}
+
+/** A20 · File: `GET /admin/files` (filters in the URL), side panel `GET /admin/files/{id}`. */
 export function FilesBrowser() {
   const { get, set } = useUrlParams()
   const purpose = get("purpose") ?? ""
@@ -37,15 +47,18 @@ export function FilesBrowser() {
   const since = get("created_after") ?? ""
   const selectedId = get("id")
   const [removing, setRemoving] = React.useState(false)
+  const userOptions = useUserOptions()
 
-  const files = ADMIN_FILES.filter(
-    (f) =>
-      (!purpose || f.purpose === purpose) &&
-      (!owner || f.owner.id === owner) &&
-      (!removed || f.is_removed) &&
-      (!since || f.created_at.slice(0, 10) >= since)
-  )
-  const selected = ADMIN_FILES.find((f) => f.id === selectedId)
+  const q = useApi<Paginated<AdminFile>>("admin", "/admin/files", {
+    purpose: purpose || undefined,
+    owner_id: owner,
+    is_removed: removed ? true : undefined,
+    created_after: since || undefined,
+    page_size: 100,
+  })
+  const files = q.data?.results ?? []
+  const selectedQ = useApi<AdminFile>("admin", selectedId ? `/admin/files/${selectedId}` : null)
+  const selected = selectedQ.data?.id === selectedId ? selectedQ.data : undefined
   const hasFilter = !!(purpose || owner || removed || since)
 
   return (
@@ -81,7 +94,11 @@ export function FilesBrowser() {
         )}
       </div>
 
-      {files.length ? (
+      {q.error && !q.data ? (
+        <LoadError error={q.error} onRetry={q.reload} backHref="/admin" backLabel="Kembali ke Dashboard" />
+      ) : q.loading ? (
+        <TableSkeleton />
+      ) : files.length ? (
         <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
           {files.map((f) => {
             const pdf = f.mime === "application/pdf"
@@ -97,7 +114,14 @@ export function FilesBrowser() {
                   )}
                 >
                   <span className="relative flex aspect-[4/3] items-center justify-center bg-muted text-muted-foreground">
-                    {pdf ? <IconFileTypePdf className="size-9 text-destructive/70" stroke={1.25} /> : <IconPhoto className="size-9" stroke={1.25} />}
+                    {pdf ? (
+                      <IconFileTypePdf className="size-9 text-destructive/70" stroke={1.25} />
+                    ) : f.url ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- uploaded file served by the API
+                      <img src={f.url} alt="" loading="lazy" className="size-full object-cover" />
+                    ) : (
+                      <IconPhoto className="size-9" stroke={1.25} />
+                    )}
                     {f.is_removed && (
                       <span className="absolute top-2 left-2">
                         <DeletedChip />
@@ -145,7 +169,7 @@ export function FilesBrowser() {
               columns={1}
               items={[
                 { label: "Jenis", value: PURPOSE_LABEL[selected.purpose] },
-                { label: "Ukuran", value: `${selected.size_kb.toLocaleString("id-ID")} KB` },
+                { label: "Ukuran", value: `${Math.max(1, Math.round(selected.size / 1024)).toLocaleString("id-ID")} KB` },
                 { label: "Tipe file", value: <code className="font-mono text-xs">{selected.mime}</code> },
                 {
                   label: "Pemilik",
@@ -160,7 +184,7 @@ export function FilesBrowser() {
                   value: selected.used_in.length ? (
                     <span className="flex flex-col gap-1">
                       {selected.used_in.map((u) => (
-                        <Link key={u.href} href={u.href} className="text-primary hover:underline">
+                        <Link key={`${u.type}-${u.id}`} href={usageHref(u, selected.owner.id)} className="text-primary hover:underline">
                           {u.label}
                         </Link>
                       ))}
@@ -188,7 +212,11 @@ export function FilesBrowser() {
         notifyLabel="Beri tahu pemilik"
         destructive
         confirmLabel="Hapus file"
-        onConfirm={() => toast.add({ title: "File dihapus.", type: "success" })}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.post(`/admin/files/${selected!.id}/remove`, { admin_reason: reason, notify_user: notify })
+          toast.add({ title: "File dihapus.", type: "success" })
+          void revalidate("admin", "/admin/files", "/admin/products", "/admin/stores", "/admin/umkms", "/admin/audit-logs")
+        }}
       />
     </AdminPage>
   )

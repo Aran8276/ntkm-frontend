@@ -18,6 +18,9 @@ import {
 } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
+import { adminApi, type Paginated, type Query } from "@/lib/api"
+import { useApi } from "@/lib/use-api"
+import { LoadError, handleApiError } from "@/components/app/feedback"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -37,8 +40,11 @@ export interface Column<T> {
   key: string
   header: React.ReactNode
   cell: (row: T) => React.ReactNode
-  /** Makes the column sortable (ordering=<key> / -<key>). */
-  sort?: (row: T) => string | number | null
+  /**
+   * Makes the column sortable (ordering=<key> / -<key>). Server tables pass
+   * `true`; client tables pass a value getter.
+   */
+  sort?: ((row: T) => string | number | null) | true
   className?: string
 }
 
@@ -56,13 +62,19 @@ export interface FilterDef<T> {
   multiple?: boolean
   /** Shows a search box (entity picker filters). */
   searchable?: boolean
-  match: (row: T, value: string) => boolean
+  /** Client-side matcher (tables fed with `rows`). */
+  match?: (row: T, value: string) => boolean
+  /** API param name in server mode (defaults to `key`). */
+  param?: string
 }
 
 export interface ToggleDef<T> {
   key: string
   label: string
-  match: (row: T) => boolean
+  match?: (row: T) => boolean
+  /** API param/value in server mode (defaults to `key`=true). */
+  param?: string
+  value?: string
 }
 
 export interface RowAction {
@@ -74,12 +86,22 @@ export interface RowAction {
 export interface QuickTab<T> {
   value: string
   label: string
-  match: (row: T) => boolean
+  match?: (row: T) => boolean
+  /** Extra API params for this view (server mode). */
+  query?: Query
   count?: boolean
 }
 
 interface DataTableProps<T> {
-  rows: T[]
+  /** Client mode rows (ignored when `endpoint` is set). */
+  rows?: T[]
+  /**
+   * Server mode: GET this admin endpoint (paginated) with search, filters,
+   * ordering and paging taken from the URL.
+   */
+  endpoint?: string
+  /** Params always sent in server mode (and with CSV exports). */
+  baseQuery?: Query
   columns: Column<T>[]
   rowKey: (row: T) => string
   rowHref?: (row: T) => string
@@ -106,7 +128,9 @@ interface DataTableProps<T> {
 
 /** Admin data table: toolbar, filter bar, sortable header, row menu, pagination — all URL-backed. */
 export function DataTable<T>({
-  rows,
+  rows: clientRows = [],
+  endpoint,
+  baseQuery,
   columns,
   rowKey,
   rowHref,
@@ -169,38 +193,54 @@ export function DataTable<T>({
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
-  // --- Filtering, sorting, paging ---------------------------------------
+  // --- Server mode: URL state → API query -------------------------------
   const quickTab = quickTabs?.find((q) => q.value === quick)
+  const filterQuery: Query = {
+    search: query || undefined,
+    include_deleted: includeDeleted ? "true" : undefined,
+    ...Object.fromEntries(filters.map((f) => [f.param ?? f.key, filterValues[f.key].length ? filterValues[f.key] : undefined])),
+    ...Object.fromEntries(toggles.map((t) => [t.param ?? t.key, toggleValues[t.key] ? (t.value ?? "true") : undefined])),
+  }
+  const apiQuery: Query = { ...baseQuery, ...quickTab?.query, ...filterQuery, ordering, page, page_size: pageSize }
+  const server = useApi<Paginated<T>>("admin", endpoint ?? null, apiQuery)
+  const rows = endpoint ? (server.data?.results ?? []) : clientRows
+  const isLoading = endpoint ? server.loading : loading
+
+  // --- Filtering, sorting, paging (client mode) -------------------------
   const base = rows.filter((r) => includeDeleted || !isDeleted?.(r))
-  const filtered = base.filter((r) => {
-    if (quickTab && !quickTab.match(r)) return false
-    if (query && search && !search.text(r).toLowerCase().includes(query.toLowerCase())) return false
-    for (const f of filters) {
-      const vals = filterValues[f.key]
-      if (vals.length && !vals.some((v) => f.match(r, v))) return false
-    }
-    for (const t of toggles) if (toggleValues[t.key] && !t.match(r)) return false
-    return true
-  })
+  const filtered = endpoint
+    ? base
+    : base.filter((r) => {
+        if (quickTab?.match && !quickTab.match(r)) return false
+        if (query && search && !search.text(r).toLowerCase().includes(query.toLowerCase())) return false
+        for (const f of filters) {
+          const vals = filterValues[f.key]
+          if (vals.length && f.match && !vals.some((v) => f.match!(r, v))) return false
+        }
+        for (const t of toggles) if (toggleValues[t.key] && t.match && !t.match(r)) return false
+        return true
+      })
 
   const desc = ordering.startsWith("-")
   const sortKey = ordering.replace(/^-/, "")
   const sortCol = columns.find((c) => c.key === sortKey && c.sort)
-  const sorted = sortCol
-    ? [...filtered].sort((a, b) => {
-        const va = sortCol.sort!(a)
-        const vb = sortCol.sort!(b)
-        if (va == null) return 1
-        if (vb == null) return -1
-        const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb), "id")
-        return desc ? -cmp : cmp
-      })
-    : filtered
+  const sortFn = sortCol && typeof sortCol.sort === "function" ? sortCol.sort : null
+  const sorted =
+    !endpoint && sortFn
+      ? [...filtered].sort((a, b) => {
+          const va = sortFn(a)
+          const vb = sortFn(b)
+          if (va == null) return 1
+          if (vb == null) return -1
+          const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb), "id")
+          return desc ? -cmp : cmp
+        })
+      : filtered
 
-  const total = sorted.length
+  const total = endpoint ? (server.data?.count ?? 0) : sorted.length
   const pages = Math.max(1, Math.ceil(total / pageSize))
   const current = Math.min(page, pages)
-  const visible = sorted.slice((current - 1) * pageSize, current * pageSize)
+  const visible = endpoint ? sorted : sorted.slice((current - 1) * pageSize, current * pageSize)
 
   const clearAll = () =>
     set({
@@ -214,8 +254,15 @@ export function DataTable<T>({
   const toggleSort = (key: string) =>
     set({ ordering: sortKey === key ? (desc ? key : `-${key}`) : key, page: null })
 
-  const exportCsv = (resource: string) =>
+  /** `GET /admin/exports/{resource}.csv` with the active filters. */
+  const exportCsv = async (resource: string) => {
     toast.add({ title: `Ekspor dimulai: ${resource}.csv`, description: "Memakai filter yang sedang aktif.", type: "info" })
+    try {
+      await adminApi.download(`/admin/exports/${resource}.csv`, { ...baseQuery, ...quickTab?.query, ...filterQuery }, `${resource}.csv`)
+    } catch (e) {
+      handleApiError(e, { admin: true })
+    }
+  }
 
   const hasMenu = !!rowMenu
 
@@ -267,7 +314,7 @@ export function DataTable<T>({
         <div className="flex gap-1 overflow-x-auto border-b [scrollbar-width:none]">
           {quickTabs.map((q) => {
             const active = q.value === quick
-            const n = q.count ? base.filter(q.match).length : null
+            const n = q.count && !endpoint && q.match ? base.filter(q.match).length : null
             return (
               <button
                 key={q.value}
@@ -283,6 +330,7 @@ export function DataTable<T>({
                 {n != null && n > 0 && (
                   <span className="flex h-4 min-w-4 items-center justify-center bg-destructive px-1 text-[0.625rem] text-white">{n}</span>
                 )}
+                {q.count && endpoint && <QuickTabCount endpoint={endpoint} query={{ ...baseQuery, ...q.query, page_size: 1 }} />}
               </button>
             )
           })}
@@ -352,6 +400,8 @@ export function DataTable<T>({
         </div>
       )}
 
+      {endpoint && server.error && !server.data && <LoadError error={server.error} onRetry={server.reload} backHref="/admin" backLabel="Kembali ke Dashboard" />}
+
       {/* Table */}
       <div className="min-w-0 bg-background shadow-sm ring-1 ring-foreground/5">
         <Table>
@@ -386,7 +436,7 @@ export function DataTable<T>({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {loading
+            {isLoading
               ? Array.from({ length: 10 }).map((_, i) => (
                   <TableRow key={i} className="hover:bg-transparent">
                     {columns.map((c) => (
@@ -451,7 +501,7 @@ export function DataTable<T>({
           </TableBody>
         </Table>
 
-        {!loading && total === 0 && (
+        {!isLoading && total === 0 && (
           <div className="flex flex-col items-center gap-4 border-t px-6 py-14 text-center">
             {activeFilterCount > 0 || quickTab !== quickTabs?.[0] ? (
               <>
@@ -473,7 +523,7 @@ export function DataTable<T>({
         )}
 
         {/* Pagination */}
-        {!loading && total > 0 && (
+        {!isLoading && total > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-4 border-t px-5 py-3 text-sm">
             <span className="text-muted-foreground tabular-nums">
               Menampilkan {(current - 1) * pageSize + 1}–{Math.min(current * pageSize, total)} dari {total}
@@ -637,6 +687,14 @@ function ActiveChip({ label, onRemove }: { label: string; onRemove: () => void }
       </button>
     </span>
   )
+}
+
+/** Badge with the row count of a quick view (server mode). */
+function QuickTabCount({ endpoint, query }: { endpoint: string; query: Query }) {
+  const q = useApi<Paginated<unknown>>("admin", endpoint, query)
+  const n = q.data?.count ?? 0
+  if (!n) return null
+  return <span className="flex h-4 min-w-4 items-center justify-center bg-destructive px-1 text-[0.625rem] text-white">{n}</span>
 }
 
 /** Fallback for Suspense around URL-backed tables. */

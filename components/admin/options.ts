@@ -1,41 +1,64 @@
-import {
-  ADMIN_CATEGORIES,
-  ADMIN_OPPORTUNITIES,
-  ADMIN_STORES,
-  ADMIN_UMKMS,
-  ADMIN_USERS,
-} from "@/lib/admin-mock"
+"use client"
+
+import type { Paginated, Query } from "@/lib/api"
+import { useApi } from "@/lib/use-api"
+import type { AdminCategory, AdminOpportunity, AdminStore, AdminUmkm, AdminUser } from "@/lib/admin-types"
 import type { EntityOption } from "@/components/admin/pickers"
 
-/** Option lists for entity pickers and table filters (mock of list endpoints with ?search=). */
-export const userOptions: EntityOption[] = ADMIN_USERS.filter((u) => !u.deleted_at).map((u) => ({
-  value: u.id,
-  label: u.name,
-  description: u.email,
-}))
+/**
+ * Option lists for entity pickers and table filters, loaded from the admin
+ * list endpoints (first 100 rows; pickers filter them as the admin types).
+ */
+function useList<T>(path: string | null, query?: Query) {
+  return useApi<Paginated<T>>("admin", path, { page_size: 100, ...query }).data?.results ?? []
+}
 
-export const adminOptions: EntityOption[] = ADMIN_USERS.filter((u) => u.is_admin).map((u) => ({
-  value: u.id,
-  label: u.name,
-  description: u.email,
-}))
+export function useUserOptions(query?: Query, enabled = true): EntityOption[] {
+  return useList<AdminUser>(enabled ? "/admin/users" : null, query).map((u) => ({
+    value: u.id,
+    label: u.name || u.email,
+    description: u.email,
+  }))
+}
 
-export const storeOptions: EntityOption[] = ADMIN_STORES.filter((s) => !s.deleted_at).map((s) => ({
-  value: s.id,
-  label: s.name,
-  description: s.owner.email,
-}))
+export function useAdminOptions(enabled = true): EntityOption[] {
+  return useUserOptions({ is_admin: true }, enabled)
+}
 
-export const umkmOptions: EntityOption[] = ADMIN_UMKMS.filter((u) => !u.deleted_at).map((u) => ({
-  value: u.id,
-  label: u.business_name,
-  description: u.owner.email,
-}))
+/** Raw user rows (forms that disable ineligible accounts). */
+export function useUsers(query?: Query, enabled = true) {
+  return useList<AdminUser>(enabled ? "/admin/users" : null, query)
+}
 
-export const opportunityOptions: EntityOption[] = ADMIN_OPPORTUNITIES.filter((o) => !o.deleted_at).map((o) => ({
-  value: o.id,
-  label: o.title,
-  description: o.store.name,
-}))
+export function useStoreOptions(enabled = true): EntityOption[] {
+  return useList<AdminStore>(enabled ? "/admin/stores" : null).map((s) => ({
+    value: s.id,
+    label: s.name,
+    description: s.owner.email,
+  }))
+}
 
-export const categoryOptions = ADMIN_CATEGORIES.map((c) => ({ value: c.slug, label: c.name }))
+export function useUmkmOptions(enabled = true): EntityOption[] {
+  return useList<AdminUmkm>(enabled ? "/admin/umkms" : null).map((u) => ({
+    value: u.id,
+    label: u.business_name,
+    description: u.owner.email,
+  }))
+}
+
+export function useOpportunityOptions(query?: Query, enabled = true): EntityOption[] {
+  return useList<AdminOpportunity>(enabled ? "/admin/opportunities" : null, query).map((o) => ({
+    value: o.id,
+    label: o.title,
+    description: o.store.name,
+  }))
+}
+
+export function useCategories(): AdminCategory[] {
+  return useApi<AdminCategory[]>("admin", "/admin/categories").data ?? []
+}
+
+/** Category filter options (value = slug, as the list endpoints expect). */
+export function useCategoryOptions() {
+  return useCategories().map((c) => ({ value: c.slug, label: c.name }))
+}

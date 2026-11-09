@@ -4,9 +4,12 @@ import * as React from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { IconInfoCircle } from "@tabler/icons-react"
 
-import { ADMIN_APPLICATIONS, ADMIN_CATEGORIES, ADMIN_OPPORTUNITIES, ADMIN_STORES, TODAY } from "@/lib/admin-mock"
-import { CATEGORIES } from "@/lib/mock-data"
-import type { AdminOpportunity } from "@/lib/admin-types"
+import { addDaysIso, todayIso } from "@/lib/format"
+import { adminApi, isApiError } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { AdminOpportunity, AdminStore } from "@/lib/admin-types"
+import { LoadError, formLevelError, handleApiError } from "@/components/app/feedback"
+import { TableSkeleton } from "@/components/admin/data-table"
 import type { Commission, ReceivingSlot } from "@/lib/types"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Input } from "@/components/ui/input"
@@ -29,23 +32,52 @@ import { AdminPage } from "@/components/admin/admin-page"
 import { AdminFormLayout, AdminNoteFields, FormSectionCard } from "@/components/admin/form-layout"
 import { OperatingHoursTable } from "@/components/admin/embedded"
 import { EntityPicker } from "@/components/admin/pickers"
-import { storeOptions } from "@/components/admin/options"
+import { useCategories, useStoreOptions } from "@/components/admin/options"
 
-/** Only active categories can be picked. */
-const ACTIVE_CATEGORIES = CATEGORIES.filter((c) => ADMIN_CATEGORIES.find((a) => a.name === c.name)?.is_active)
+/** API field → form error key. */
+const FIELD: Record<string, string> = {
+  store_id: "store",
+  title: "title",
+  description: "description",
+  category_ids: "categories",
+  "requirements.notes": "notes",
+  commission: "commission",
+  "commission.value": "commission",
+  receiving_schedule: "schedule",
+  valid_until: "validUntil",
+}
+
+/** A11 loader: create or edit (`GET /admin/opportunities/{id}`). */
+export function OpportunityAdminFormPage({ id }: { id?: string }) {
+  const q = useApi<AdminOpportunity>("admin", id ? `/admin/opportunities/${id}` : null)
+  if (!id) return <OpportunityAdminForm />
+  if (!q.data)
+    return (
+      <AdminPage breadcrumb={[{ label: "Peluang", href: "/admin/peluang" }]} title="Ubah peluang">
+        {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref="/admin/peluang" backLabel="Kembali ke Peluang" /> : <TableSkeleton />}
+      </AdminPage>
+    )
+  return <OpportunityAdminForm key={q.data.id} opportunity={q.data} />
+}
 
 /** A11 · Form peluang (admin). */
-export function OpportunityAdminForm({ opportunity: o }: { opportunity?: AdminOpportunity }) {
+function OpportunityAdminForm({ opportunity: o }: { opportunity?: AdminOpportunity }) {
   const router = useRouter()
   const params = useSearchParams()
   const edit = !!o
-  const hasApplications = !!o && ADMIN_APPLICATIONS.some((a) => a.opportunity.id === o.id)
+  const hasApplications = !!o?.has_applications
+  const [TODAY] = React.useState(() => todayIso())
+  const storeOptions = useStoreOptions()
+  // Only active categories can be picked (inactive ones already on the opportunity stay listed).
+  const ACTIVE_CATEGORIES = useCategories().filter((c) => c.is_active || o?.categories.some((x) => x.id === c.id))
 
   const [storeId, setStoreId] = React.useState<string | null>(o?.store.id ?? params.get("store_id"))
-  const store = ADMIN_STORES.find((s) => s.id === storeId)
+  // Operating hours of the chosen store (receiving slots must sit inside them).
+  const storeQ = useApi<AdminStore>("admin", storeId ? `/admin/stores/${storeId}` : null)
+  const store = storeQ.data
   const [title, setTitle] = React.useState(o?.title ?? "")
   const [description, setDescription] = React.useState(o?.description ?? "")
-  const [categories, setCategories] = React.useState<number[]>(o?.categories.map((c) => c.id) ?? [])
+  const [categories, setCategories] = React.useState<string[]>(o?.categories.map((c) => c.id) ?? [])
   const [minShelf, setMinShelf] = React.useState(o?.requirements.min_shelf_life_days?.toString() ?? "")
   const [maxPrice, setMaxPrice] = React.useState<number | null>(o?.requirements.max_retail_price ?? null)
   const [req, setReq] = React.useState({
@@ -59,7 +91,8 @@ export function OpportunityAdminForm({ opportunity: o }: { opportunity?: AdminOp
   const [commission, setCommission] = React.useState<Commission>(o?.commission ?? { type: "percent", value: 15 })
   const [samplePrice, setSamplePrice] = React.useState(10000)
   const [schedule, setSchedule] = React.useState<ReceivingSlot[]>(o?.receiving_schedule ?? [{ day: "mon", start: "08:00", end: "10:00" }])
-  const [validUntil, setValidUntil] = React.useState(o?.valid_until ?? "2026-12-04")
+  const [validUntil, setValidUntil] = React.useState(() => o?.valid_until ?? addDaysIso(30))
+  const [formError, setFormError] = React.useState<string | undefined>()
   const [reason, setReason] = React.useState("")
   const [notify, setNotify] = React.useState(true)
   const [errors, setErrors] = React.useState<Record<string, string>>({})
@@ -99,12 +132,81 @@ export function OpportunityAdminForm({ opportunity: o }: { opportunity?: AdminOp
       document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
       return
     }
+    void save()
+  }
+
+  const save = async () => {
     setSaving(true)
-    setTimeout(() => {
+    setFormError(undefined)
+    const body: Record<string, unknown> = {
+      store_id: storeId,
+      title: title.trim(),
+      description,
+      category_ids: categories,
+      requirements: {
+        min_shelf_life_days: minShelf ? Number(minShelf) : null,
+        max_retail_price: maxPrice || null,
+        requires_nib: req.nib,
+        requires_pirt: req.pirt,
+        requires_halal: req.halal,
+        notes,
+      },
+      quota,
+      max_products_per_umkm: maxProducts,
+      commission,
+      receiving_schedule: schedule,
+      valid_until: validUntil,
+    }
+    try {
+      let saved: AdminOpportunity
+      if (edit && o) {
+        // Edit mode sends only the fields that changed.
+        const before: Record<string, unknown> = {
+          store_id: o.store.id,
+          title: o.title,
+          description: o.description,
+          category_ids: o.categories.map((c) => c.id),
+          requirements: o.requirements,
+          quota: o.quota,
+          max_products_per_umkm: o.max_products_per_umkm,
+          commission: o.commission,
+          receiving_schedule: o.receiving_schedule,
+          valid_until: o.valid_until,
+        }
+        const diff = Object.fromEntries(Object.entries(body).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(before[k])))
+        saved = await adminApi.patch<AdminOpportunity>(`/admin/opportunities/${o.id}`, {
+          ...diff,
+          admin_reason: reason || undefined,
+          notify_user: notify,
+        })
+      } else saved = await adminApi.post<AdminOpportunity>("/admin/opportunities", { ...body, admin_reason: reason || undefined })
       toast.add({ title: edit ? "Perubahan disimpan." : "Peluang dibuat.", type: "success" })
       setDirty(false)
-      router.push(`/admin/peluang/${o?.id ?? ADMIN_OPPORTUNITIES[0].id}`)
-    }, 700)
+      void revalidate("admin", "/admin/opportunities", "/admin/audit-logs", "/admin/dashboard")
+      router.push(`/admin/peluang/${saved.id}`)
+    } catch (err) {
+      setSaving(false)
+      if (isApiError(err) && err.code === "conflict") {
+        setErrors({ store: err.message })
+        document.getElementById("f-store")?.scrollIntoView({ behavior: "smooth", block: "center" })
+        return
+      }
+      handleApiError(err, {
+        admin: true,
+        onFieldErrors: (fields, apiErr) => {
+          const mapped: Record<string, string> = {}
+          for (const [k, v] of Object.entries(fields)) {
+            const key = FIELD[k] ?? FIELD[k.split(".")[0]] ?? (k.startsWith("receiving_schedule") ? "schedule" : undefined)
+            if (key) mapped[key] ??= v
+          }
+          setErrors(mapped)
+          setFormError(formLevelError(apiErr, Object.keys(FIELD).concat("receiving_schedule")) ?? (Object.keys(mapped).length ? undefined : apiErr.message))
+          const first = Object.keys(mapped)[0]
+          if (first) document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+          return true
+        },
+      })
+    }
   }
 
   return (

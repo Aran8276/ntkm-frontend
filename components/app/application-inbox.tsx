@@ -5,8 +5,9 @@ import Link from "next/link"
 import { IconCheck, IconChevronDown, IconInbox, IconPackage, IconSend } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
-import { MY_OPPORTUNITIES, applicationsAs } from "@/lib/mock-data"
-import type { Application, ApplicationStatus, Role } from "@/lib/types"
+import type { Paginated } from "@/lib/api"
+import { useApi } from "@/lib/use-api"
+import type { Application, ApplicationStatus, Opportunity, Role } from "@/lib/types"
 import { buttonVariants } from "@/components/ui/button"
 import {
   Sheet,
@@ -17,7 +18,8 @@ import {
 } from "@/components/ui/sheet"
 import { useQueryState } from "@/hooks/use-query-state"
 import { AppShell } from "@/components/app/app-shell"
-import { EmptyState, FilterChips, PageHeading } from "@/components/app/blocks"
+import { EmptyState, FilterChips, ListSkeleton, PageHeading } from "@/components/app/blocks"
+import { LoadError } from "@/components/app/feedback"
 import { ApplicationCard } from "@/components/app/cards"
 
 type Tab = "submitted" | "approved" | "in_delivery" | "received" | "history"
@@ -35,7 +37,7 @@ const LABELS: Record<Role, Record<Tab, string>> = {
   umkm: { submitted: "Menunggu", approved: "Disetujui", in_delivery: "Dalam pengiriman", received: "Dijual", history: "Riwayat" },
 }
 
-const slotKey = (a: Application) => (a.delivery_slot ? `${a.delivery_slot.date}${a.delivery_slot.start}` : "9999")
+const slotKey = (a: Application) => a.delivery_slot?.start_at ?? "9999"
 
 /** P10 (store inbox) and P17 (UMKM submissions). */
 export function ApplicationInbox({ viewer }: { viewer: Role }) {
@@ -43,9 +45,15 @@ export function ApplicationInbox({ viewer }: { viewer: Role }) {
   const [oppFilter, setOppFilter] = useQueryState<string>("peluang", "all")
   const [sheetOpen, setSheetOpen] = React.useState(false)
 
-  const all = applicationsAs(viewer).filter(
-    (a) => viewer === "umkm" || oppFilter === "all" || String(a.opportunity.id) === oppFilter
-  )
+  // GET /applications?as=<viewer>[&opportunity_id=] — all statuses at once so tab badges stay exact.
+  const q = useApi<Paginated<Application>>("user", "/applications", {
+    as: viewer,
+    opportunity_id: viewer === "store" && oppFilter !== "all" ? oppFilter : undefined,
+    page_size: 100,
+  })
+  const oppsQ = useApi<Paginated<Opportunity>>("user", viewer === "store" ? "/me/opportunities" : null, { page_size: 100 })
+  const opportunities = oppsQ.data?.results ?? []
+  const all = q.data?.results ?? []
   const list = all
     .filter((a) => STATUSES[tab].includes(a.status))
     .sort((a, b) =>
@@ -54,7 +62,7 @@ export function ApplicationInbox({ viewer }: { viewer: Role }) {
         : b.updated_at.localeCompare(a.updated_at)
     )
   const badgeTab: Tab = viewer === "store" ? "submitted" : "approved"
-  const selectedOpp = MY_OPPORTUNITIES.find((o) => String(o.id) === oppFilter)
+  const selectedOpp = opportunities.find((o) => o.id === oppFilter)
 
   const empty =
     tab === "submitted"
@@ -97,7 +105,11 @@ export function ApplicationInbox({ viewer }: { viewer: Role }) {
         }))}
       />
 
-      {list.length ? (
+      {q.error && !q.data ? (
+        <LoadError error={q.error} onRetry={q.reload} />
+      ) : q.loading ? (
+        <ListSkeleton rows={4} />
+      ) : list.length ? (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {list.map((a) => (
             <ApplicationCard key={a.id} application={a} viewer={viewer} />
@@ -125,7 +137,7 @@ export function ApplicationInbox({ viewer }: { viewer: Role }) {
               <SheetTitle>Filter peluang</SheetTitle>
               <SheetDescription>Tampilkan pengajuan untuk satu peluang saja.</SheetDescription>
               <div className="mt-4 flex flex-col">
-                {[{ id: "all", title: "Semua peluang" }, ...MY_OPPORTUNITIES.map((o) => ({ id: String(o.id), title: o.title }))].map(
+                {[{ id: "all", title: "Semua peluang" }, ...opportunities.map((o) => ({ id: o.id, title: o.title }))].map(
                   (o) => (
                     <button
                       key={o.id}

@@ -5,7 +5,10 @@ import { useRouter } from "next/navigation"
 import { IconAlertCircle } from "@tabler/icons-react"
 
 import { formatRupiah } from "@/lib/format"
-import { ADMIN_APPLICATIONS, ADMIN_OPPORTUNITIES, ADMIN_PRODUCTS, ADMIN_UMKMS } from "@/lib/admin-mock"
+import { adminApi, isApiError, type Paginated } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { AdminApplication, AdminOpportunity, AdminProduct } from "@/lib/admin-types"
+import { handleApiError } from "@/components/app/feedback"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -25,8 +28,7 @@ import {
 import { FormField } from "@/components/app/form-field"
 import { CharCount } from "@/components/app/inputs"
 import { EntityPicker } from "@/components/admin/pickers"
-import { umkmOptions } from "@/components/admin/options"
-import { ConflictModal } from "@/components/admin/risky-action"
+import { useUmkmOptions } from "@/components/admin/options"
 
 /** Modal "Pengajuan atas nama UMKM" (A15). */
 export function CreateApplicationModal({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
@@ -39,8 +41,14 @@ export function CreateApplicationModal({ open, onOpenChange }: { open: boolean; 
   const [reason, setReason] = React.useState("")
   const [notify, setNotify] = React.useState(true)
   const [problems, setProblems] = React.useState<string[]>([])
-  const [conflict, setConflict] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
+  const umkmOptions = useUmkmOptions(open)
+  const oppsQ = useApi<Paginated<AdminOpportunity>>("admin", open ? "/admin/opportunities" : null, { status: "open", page_size: 100 })
+  const productsQ = useApi<Paginated<AdminProduct>>("admin", umkmId ? "/admin/products" : null, {
+    umkm_id: umkmId,
+    is_active: true,
+    page_size: 100,
+  })
   const [wasOpen, setWasOpen] = React.useState(open)
   if (open !== wasOpen) {
     setWasOpen(open)
@@ -56,10 +64,11 @@ export function CreateApplicationModal({ open, onOpenChange }: { open: boolean; 
     }
   }
 
-  const umkm = ADMIN_UMKMS.find((u) => u.id === umkmId)
-  const opp = ADMIN_OPPORTUNITIES.find((o) => o.id === oppId)
-  const products = ADMIN_PRODUCTS.filter((p) => p.umkm.id === umkmId && p.is_active && !p.deleted_at)
-  const oppOptions = ADMIN_OPPORTUNITIES.filter((o) => o.status === "open" && !o.deleted_at).map((o) => ({
+  const umkm = umkmOptions.find((u) => u.value === umkmId)
+  const opportunities = oppsQ.data?.results ?? []
+  const opp = opportunities.find((o) => o.id === oppId)
+  const products = productsQ.data?.results ?? []
+  const oppOptions = opportunities.map((o) => ({
     value: o.id,
     label: o.title,
     description: `${o.store.name} · sisa kuota ${o.quota_remaining} · maks ${o.max_products_per_umkm} produk/UMKM`,
@@ -67,37 +76,35 @@ export function CreateApplicationModal({ open, onOpenChange }: { open: boolean; 
   const limit = opp?.max_products_per_umkm ?? 0
   const valid = !!umkmId && !!oppId && productIds.length > 0 && reason.trim().length >= 5 && note.length <= 300
 
-  const submit = () => {
+  /** `POST /admin/applications`; 400 requirement problems are listed above the form. */
+  const submit = async () => {
     if (!valid || !opp || !umkm) return
-    // 409: already has an active application for this opportunity.
-    if (ADMIN_APPLICATIONS.some((a) => a.opportunity.id === opp.id && a.umkm.id === umkm.id && ["submitted", "approved", "in_delivery", "received"].includes(a.status))) {
-      setConflict(true)
-      return
-    }
-    // 400: requirement check unless skipped.
-    if (!skip) {
-      const issues: string[] = []
-      for (const p of products.filter((x) => productIds.includes(x.id))) {
-        if (!opp.categories.some((c) => c.id === p.category.id)) issues.push(`${p.name}: kategori ${p.category.name} tidak dicari peluang ini.`)
-        if (opp.requirements.max_retail_price && p.suggested_retail_price > opp.requirements.max_retail_price)
-          issues.push(`${p.name}: harga jual ${formatRupiah(p.suggested_retail_price)} melebihi batas ${formatRupiah(opp.requirements.max_retail_price)}.`)
-        if (opp.requirements.min_shelf_life_days && (p.shelf_life_days ?? 0) < opp.requirements.min_shelf_life_days)
-          issues.push(`${p.name}: masa simpan kurang dari ${opp.requirements.min_shelf_life_days} hari.`)
-      }
-      if (opp.requirements.requires_pirt && umkm.legal_verification.pirt.status !== "verified") issues.push("UMKM belum punya PIRT terverifikasi.")
-      if (opp.requirements.requires_halal && umkm.legal_verification.halal.status !== "verified") issues.push("UMKM belum punya sertifikat halal terverifikasi.")
-      if (issues.length) {
-        setProblems(issues)
-        return
-      }
-    }
     setBusy(true)
-    setTimeout(() => {
+    setProblems([])
+    try {
+      const created = await adminApi.post<AdminApplication>("/admin/applications", {
+        umkm_id: umkmId,
+        opportunity_id: oppId,
+        product_ids: productIds,
+        note,
+        skip_requirement_check: skip,
+        admin_reason: reason.trim(),
+        notify_user: notify,
+      })
       setBusy(false)
       onOpenChange(false)
       toast.add({ title: "Pengajuan dibuat.", type: "success" })
-      router.push(`/admin/pengajuan/${ADMIN_APPLICATIONS[0].id}`)
-    }, 700)
+      void revalidate("admin", "/admin/applications", "/admin/opportunities", "/admin/dashboard", "/admin/audit-logs")
+      router.push(`/admin/pengajuan/${created.id}`)
+    } catch (e) {
+      setBusy(false)
+      if (isApiError(e) && e.code === "validation_error") {
+        const fields = e.fieldErrors()
+        setProblems(Object.values(fields).length ? Object.values(fields) : [e.message])
+        return
+      }
+      handleApiError(e, { admin: true })
+    }
   }
 
   return (
@@ -205,22 +212,13 @@ export function CreateApplicationModal({ open, onOpenChange }: { open: boolean; 
             <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               Batal
             </Button>
-            <Button data-save disabled={!valid || busy} onClick={submit}>
+            <Button data-save disabled={!valid || busy} onClick={() => void submit()}>
               {busy && <Spinner data-icon="inline-start" />}
               Buat pengajuan
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <ConflictModal
-        open={conflict}
-        onOpenChange={setConflict}
-        message="UMKM ini sudah punya pengajuan aktif untuk peluang tersebut."
-        links={ADMIN_APPLICATIONS.filter((a) => a.opportunity.id === oppId && a.umkm.id === umkmId).map((a) => ({
-          label: `Pengajuan ${a.id.slice(0, 8)}`,
-          href: `/admin/pengajuan/${a.id}`,
-        }))}
-      />
     </>
   )
 }

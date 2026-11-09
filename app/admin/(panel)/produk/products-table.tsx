@@ -5,14 +5,13 @@ import { useRouter } from "next/navigation"
 import { IconPlus } from "@tabler/icons-react"
 
 import { formatDate, formatRupiah } from "@/lib/format"
-import { ADMIN_PRODUCTS, slugify } from "@/lib/admin-mock"
 import type { AdminProduct } from "@/lib/admin-types"
 import { Button } from "@/components/ui/button"
 import { Thumb } from "@/components/app/blocks"
 import { AdminPage } from "@/components/admin/admin-page"
 import { ActiveChip, CellLink, CreatorChip, DateTime, DeletedChip } from "@/components/admin/admin-ui"
 import { DataTable } from "@/components/admin/data-table"
-import { categoryOptions, umkmOptions } from "@/components/admin/options"
+import { useCategoryOptions, useUmkmOptions } from "@/components/admin/options"
 import { productMenu, useProductActions } from "@/components/admin/product-actions"
 
 export const shelfLabel = (p: Pick<AdminProduct, "shelf_life_days" | "expiry_date">) =>
@@ -22,6 +21,8 @@ export const shelfLabel = (p: Pick<AdminProduct, "shelf_life_days" | "expiry_dat
 export function ProductsTable() {
   const router = useRouter()
   const { open, modals } = useProductActions()
+  const umkmOptions = useUmkmOptions()
+  const categoryOptions = useCategoryOptions()
   const create = (
     <Button render={<Link href="/admin/produk/baru" />} nativeButton={false}>
       <IconPlus data-icon="inline-start" /> Produk
@@ -30,14 +31,14 @@ export function ProductsTable() {
   return (
     <AdminPage title="Produk" description="Produk UMKM peserta pilot.">
       <DataTable<AdminProduct>
-        rows={ADMIN_PRODUCTS}
+        endpoint="/admin/products"
         rowKey={(p) => p.id}
         rowHref={(p) => `/admin/produk/${p.id}`}
         isDeleted={(p) => !!p.deleted_at}
         search={{ placeholder: "Cari nama produk, tagar, atau nama usaha", text: (p) => `${p.name} ${p.tags.join(" ")} ${p.umkm.business_name}` }}
         filters={[
           { key: "umkm_id", label: "UMKM", searchable: true, options: umkmOptions, match: (p, v) => p.umkm.id === v },
-          { key: "category", label: "Kategori", options: categoryOptions, match: (p, v) => slugify(p.category.name) === v },
+          { key: "category", label: "Kategori", options: categoryOptions, match: (p, v) => p.category.slug === v },
           {
             key: "is_active",
             label: "Status",
@@ -52,7 +53,7 @@ export function ProductsTable() {
         exportResources={["products"]}
         createAction={create}
         columns={[
-          { key: "photo", header: "Foto", cell: () => <Thumb size="sm" /> },
+          { key: "photo", header: "Foto", cell: (p) => <Thumb size="sm" src={p.photo_url} /> },
           {
             key: "name",
             header: "Nama",

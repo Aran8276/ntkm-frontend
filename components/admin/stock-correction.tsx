@@ -3,6 +3,8 @@
 import * as React from "react"
 
 import type { StockMode, StockStatus } from "@/lib/types"
+import { adminApi } from "@/lib/api"
+import { revalidate } from "@/lib/use-api"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -11,11 +13,13 @@ import { FormField } from "@/components/app/form-field"
 import { RiskyActionModal } from "@/components/admin/risky-action"
 
 export interface StockTarget {
+  applicationId: string
+  itemId: number
   productName: string
   storeName: string
   mode: StockMode
   quantity: number | null
-  status: StockStatus
+  status: StockStatus | null
 }
 
 /** Modal "Koreksi stok" (A16, A17). */
@@ -33,7 +37,7 @@ export function StockCorrectionModal({
     setPrev(target)
     if (target) {
       setQty(String(target.quantity ?? 0))
-      setStatus(target.status)
+      setStatus(target.status ?? "available")
     }
   }
   const qtyOk = target?.mode !== "count" || (qty !== "" && Number(qty) >= 0)
@@ -49,7 +53,16 @@ export function StockCorrectionModal({
       reasonPlaceholder="Mis. hasil cek fisik rak 10 Nov."
       confirmLabel="Koreksi stok"
       canConfirm={qtyOk}
-      onConfirm={() => toast.add({ title: "Stok dikoreksi.", type: "success" })}
+      onConfirm={async ({ reason, notify }) => {
+        const t = target!
+        await adminApi.patch(`/admin/applications/${t.applicationId}/items/${t.itemId}/stock`, {
+          ...(t.mode === "count" ? { stock_quantity: Number(qty) } : { stock_status: status }),
+          admin_reason: reason,
+          notify_user: notify,
+        })
+        toast.add({ title: "Stok dikoreksi.", type: "success" })
+        void revalidate("admin", "/admin/stock", "/admin/applications", "/admin/audit-logs", "/admin/dashboard")
+      }}
     >
       {target?.mode === "count" ? (
         <FormField label="Jumlah stok sekarang" htmlFor="stock-qty" required error={!qtyOk ? "Minimal 0." : undefined}>

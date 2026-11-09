@@ -3,41 +3,40 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 
-import { TODAY } from "@/lib/admin-mock"
+import { addDaysIso, todayIso } from "@/lib/format"
+import { adminApi } from "@/lib/api"
+import { revalidate } from "@/lib/use-api"
 import type { AdminOpportunity } from "@/lib/admin-types"
 import { Input } from "@/components/ui/input"
 import { toast } from "@/components/ui/toast"
 import { FormField } from "@/components/app/form-field"
-import { ConflictModal, RiskyActionModal } from "@/components/admin/risky-action"
+import { RiskyActionModal } from "@/components/admin/risky-action"
 
 export type OppAction = "close" | "reopen" | "delete" | "restore" | "hard_delete"
 
-const ACTIVE_COUNT = (o: AdminOpportunity) =>
-  (o.application_counts.submitted ?? 0) +
-  (o.application_counts.approved ?? 0) +
-  (o.application_counts.in_delivery ?? 0) +
-  (o.application_counts.received ?? 0)
+const refresh = () => revalidate("admin", "/admin/opportunities", "/admin/applications", "/admin/audit-logs", "/admin/dashboard")
 
-/** Tutup / buka ulang / hapus / pulihkan / hapus permanen peluang (A09, A10). */
+/**
+ * Tutup / buka ulang / hapus / pulihkan / hapus permanen peluang (A09, A10).
+ * Deleting with active applications returns 409 `has_active_relations`,
+ * shown by the shared dialog with links to those applications.
+ */
 export function useOpportunityActions() {
   const router = useRouter()
   const [state, setState] = React.useState<{ action: OppAction; opp: AdminOpportunity } | null>(null)
-  const [blocked, setBlocked] = React.useState<AdminOpportunity | null>(null)
-  const [validUntil, setValidUntil] = React.useState("2026-12-04")
+  const [validUntil, setValidUntil] = React.useState("")
+  const [today, setToday] = React.useState("")
   const o = state?.opp
   const close = (v: boolean) => !v && setState(null)
 
   const open = (action: OppAction, opp: AdminOpportunity) => {
-    // 409 has_active_relations: deleting with active applications is blocked.
-    if (action === "delete" && ACTIVE_COUNT(opp) > 0) {
-      setBlocked(opp)
-      return
-    }
-    if (action === "reopen") setValidUntil(opp.valid_until < TODAY ? "2026-12-04" : opp.valid_until)
+    const t = todayIso()
+    setToday(t)
+    if (action === "reopen") setValidUntil(opp.valid_until < t ? addDaysIso(30) : opp.valid_until)
     setState({ action, opp })
   }
 
-  const expired = !!o && o.valid_until < TODAY
+  const expired = !!o && o.valid_until < today
 
   const modals = (
     <>
@@ -49,7 +48,11 @@ export function useOpportunityActions() {
         notify
         notifyLabel="Beri tahu toko"
         confirmLabel="Tutup peluang"
-        onConfirm={() => toast.add({ title: "Peluang ditutup.", type: "success" })}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.post(`/admin/opportunities/${o!.id}/close`, { admin_reason: reason, notify_user: notify })
+          toast.add({ title: "Peluang ditutup.", type: "success" })
+          void refresh()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "reopen"}
@@ -59,17 +62,25 @@ export function useOpportunityActions() {
         notify
         notifyLabel="Beri tahu toko"
         confirmLabel="Buka ulang"
-        canConfirm={validUntil >= TODAY}
-        onConfirm={() => toast.add({ title: "Peluang dibuka ulang.", type: "success" })}
+        canConfirm={validUntil >= today}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.post(`/admin/opportunities/${o!.id}/reopen`, {
+            valid_until: validUntil,
+            admin_reason: reason,
+            notify_user: notify,
+          })
+          toast.add({ title: "Peluang dibuka ulang.", type: "success" })
+          void refresh()
+        }}
       >
         <FormField
           label="Berlaku sampai"
           htmlFor="reopen-valid"
           required={expired}
           description={expired ? "Masa berlaku lama sudah lewat; pilih tanggal baru." : undefined}
-          error={validUntil < TODAY ? "Tanggal tidak boleh sebelum hari ini." : undefined}
+          error={validUntil < today ? "Tanggal tidak boleh sebelum hari ini." : undefined}
         >
-          <Input id="reopen-valid" type="date" min={TODAY} value={validUntil} onChange={(e) => setValidUntil(e.target.value)} className="sm:max-w-48" />
+          <Input id="reopen-valid" type="date" min={today} value={validUntil} onChange={(e) => setValidUntil(e.target.value)} className="sm:max-w-48" />
         </FormField>
       </RiskyActionModal>
       <RiskyActionModal
@@ -81,7 +92,11 @@ export function useOpportunityActions() {
         notifyLabel="Beri tahu toko"
         destructive
         confirmLabel="Hapus"
-        onConfirm={() => toast.add({ title: "Peluang dihapus.", type: "success" })}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.del(`/admin/opportunities/${o!.id}`, { body: { admin_reason: reason, notify_user: notify } })
+          toast.add({ title: "Peluang dihapus.", type: "success" })
+          void refresh()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "restore"}
@@ -89,7 +104,11 @@ export function useOpportunityActions() {
         title={`Pulihkan peluang “${o?.title ?? ""}”?`}
         impacts={["Peluang kembali dengan status sebelum dihapus"]}
         confirmLabel="Pulihkan"
-        onConfirm={() => toast.add({ title: "Peluang dipulihkan.", type: "success" })}
+        onConfirm={async ({ reason }) => {
+          await adminApi.post(`/admin/opportunities/${o!.id}/restore`, { admin_reason: reason })
+          toast.add({ title: "Peluang dipulihkan.", type: "success" })
+          void refresh()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "hard_delete"}
@@ -99,16 +118,12 @@ export function useOpportunityActions() {
         confirmText={o?.title}
         destructive
         confirmLabel="Hapus permanen"
-        onConfirm={() => {
+        onConfirm={async ({ reason }) => {
+          await adminApi.del(`/admin/opportunities/${o!.id}`, { query: { hard: true }, body: { admin_reason: reason } })
           toast.add({ title: "Peluang dihapus permanen.", type: "success" })
+          void refresh()
           router.push("/admin/peluang")
         }}
-      />
-      <ConflictModal
-        open={!!blocked}
-        onOpenChange={(v) => !v && setBlocked(null)}
-        message="Peluang ini masih punya pengajuan aktif. Selesaikan atau batalkan pengajuan tersebut sebelum menghapus."
-        links={blocked ? [{ label: "Lihat pengajuan aktif", href: `/admin/pengajuan?opportunity_id=${blocked.id}` }] : []}
       />
     </>
   )

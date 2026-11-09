@@ -1,25 +1,29 @@
 "use client"
 
+import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { IconPlus } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
 import { formatCommissionShort, formatDate } from "@/lib/format"
-import { ADMIN_OPPORTUNITIES, TODAY, slugify } from "@/lib/admin-mock"
+import { todayIso } from "@/lib/format"
 import type { AdminOpportunity } from "@/lib/admin-types"
 import { Button } from "@/components/ui/button"
 import { OpportunityStatusChip } from "@/components/app/status"
 import { AdminPage } from "@/components/admin/admin-page"
 import { CellLink, CreatorChip, DateTime, DeletedChip } from "@/components/admin/admin-ui"
 import { DataTable } from "@/components/admin/data-table"
-import { categoryOptions, storeOptions } from "@/components/admin/options"
+import { useCategoryOptions, useStoreOptions } from "@/components/admin/options"
 import { opportunityMenu, useOpportunityActions } from "@/components/admin/opportunity-actions"
 
 /** A09 · Peluang. */
 export function OpportunitiesTable() {
   const router = useRouter()
   const { open, modals } = useOpportunityActions()
+  const storeOptions = useStoreOptions()
+  const categoryOptions = useCategoryOptions()
+  const [TODAY] = React.useState(() => todayIso())
   const create = (
     <Button render={<Link href="/admin/peluang/baru" />} nativeButton={false}>
       <IconPlus data-icon="inline-start" /> Peluang
@@ -28,7 +32,7 @@ export function OpportunitiesTable() {
   return (
     <AdminPage title="Peluang" description="Peluang yang dipasang toko (atau admin atas nama toko).">
       <DataTable<AdminOpportunity>
-        rows={ADMIN_OPPORTUNITIES}
+        endpoint="/admin/opportunities"
         rowKey={(o) => o.id}
         rowHref={(o) => `/admin/peluang/${o.id}`}
         isDeleted={(o) => !!o.deleted_at}
@@ -45,7 +49,7 @@ export function OpportunitiesTable() {
             ],
             match: (o, v) => o.status === v,
           },
-          { key: "category", label: "Kategori", options: categoryOptions, match: (o, v) => o.categories.some((c) => slugify(c.name) === v) },
+          { key: "category", label: "Kategori", options: categoryOptions, match: (o, v) => o.categories.some((c) => c.slug === v) },
         ]}
         toggles={[{ key: "expired", label: "Sudah kedaluwarsa", match: (o) => o.expired }]}
         exportResources={["opportunities"]}

@@ -16,7 +16,9 @@ import {
 
 import { cn } from "@/lib/utils"
 import { initials } from "@/lib/format"
-import { ME, MY_STORE, MY_UMKM } from "@/lib/mock-data"
+import { useApi } from "@/lib/use-api"
+import type { StoreProfile, UmkmProfile } from "@/lib/types"
+import { useSession } from "@/components/app/providers"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { AppShell } from "@/components/app/app-shell"
 import { ConfirmDialog, Section, Thumb } from "@/components/app/blocks"
@@ -24,20 +26,32 @@ import { LegalChips } from "@/components/app/status"
 
 const APP_VERSION = "0.1.0"
 
+/** P21 · Profil & pengaturan. */
 export function ProfileOverview() {
   const router = useRouter()
+  const { me, logout: signOut } = useSession()
   const [logout, setLogout] = React.useState(false)
-  const roles = ME.roles
-  const openDays = MY_STORE.operating_hours.filter((h) => !h.is_closed).length
+  const roles = me?.roles ?? []
+  const storeQ = useApi<StoreProfile>("user", me?.onboarding.store_completed ? "/me/store-profile" : null)
+  const umkmQ = useApi<UmkmProfile>("user", me?.onboarding.umkm_completed ? "/me/umkm-profile" : null)
+  const MY_STORE = storeQ.data
+  const MY_UMKM = umkmQ.data
+  const openDays = MY_STORE?.operating_hours.filter((h) => !h.is_closed).length ?? 0
+  const ME = { name: me?.name ?? "", email: me?.email ?? "", avatar: me?.avatar_url }
 
   return (
     <AppShell title="Profil">
       {/* Account */}
       <Section>
         <div className="flex items-center gap-5">
-          <span className="flex size-16 shrink-0 items-center justify-center rounded-full bg-muted text-lg font-semibold">
-            {initials(ME.name)}
-          </span>
+          {ME.avatar ? (
+            // eslint-disable-next-line @next/next/no-img-element -- Google avatar URL
+            <img src={ME.avatar} alt="" className="size-16 shrink-0 rounded-full object-cover" />
+          ) : (
+            <span className="flex size-16 shrink-0 items-center justify-center rounded-full bg-muted text-lg font-semibold">
+              {initials(ME.name)}
+            </span>
+          )}
           <div className="flex min-w-0 flex-col gap-1">
             <p className="text-lg font-medium">{ME.name}</p>
             <p className="truncate text-sm text-muted-foreground">{ME.email}</p>
@@ -81,14 +95,22 @@ export function ProfileOverview() {
               </Link>
             }
           >
-            <div className="flex gap-4">
-              <Thumb kind="store" size="lg" />
-              <div className="flex min-w-0 flex-col gap-1 text-sm">
-                <p className="font-medium">{MY_STORE.name}</p>
-                <p className="text-muted-foreground">{MY_STORE.address}</p>
-                <p>Buka {openDays} hari seminggu</p>
+            {MY_STORE ? (
+              <div className="flex gap-4">
+                <Thumb kind="store" size="lg" src={MY_STORE.photo_url} />
+                <div className="flex min-w-0 flex-col gap-1 text-sm">
+                  <p className="font-medium">{MY_STORE.name}</p>
+                  <p className="text-muted-foreground">{MY_STORE.address}</p>
+                  <p>Buka {openDays} hari seminggu</p>
+                </div>
               </div>
-            </div>
+            ) : me?.onboarding.store_completed ? (
+              <p className="text-sm text-muted-foreground">Memuat…</p>
+            ) : (
+              <Link href="/onboarding/toko" className={buttonVariants({ variant: "outline", size: "sm" })}>
+                Lengkapi profil toko
+              </Link>
+            )}
           </Section>
         )}
         {roles.includes("umkm") && (
@@ -100,14 +122,22 @@ export function ProfileOverview() {
               </Link>
             }
           >
-            <div className="flex gap-4">
-              <Thumb kind="umkm" size="lg" />
-              <div className="flex min-w-0 flex-col gap-2 text-sm">
-                <p className="font-medium">{MY_UMKM.business_name}</p>
-                <p className="text-muted-foreground">{MY_UMKM.address}</p>
-                <LegalChips legal={MY_UMKM.legal} />
+            {MY_UMKM ? (
+              <div className="flex gap-4">
+                <Thumb kind="umkm" size="lg" src={MY_UMKM.logo_url} />
+                <div className="flex min-w-0 flex-col gap-2 text-sm">
+                  <p className="font-medium">{MY_UMKM.business_name}</p>
+                  <p className="text-muted-foreground">{MY_UMKM.address}</p>
+                  <LegalChips legal={MY_UMKM.legal} />
+                </div>
               </div>
-            </div>
+            ) : me?.onboarding.umkm_completed ? (
+              <p className="text-sm text-muted-foreground">Memuat…</p>
+            ) : (
+              <Link href="/onboarding/umkm" className={buttonVariants({ variant: "outline", size: "sm" })}>
+                Lengkapi profil UMKM
+              </Link>
+            )}
           </Section>
         )}
       </div>
@@ -150,7 +180,7 @@ export function ProfileOverview() {
         description="Anda perlu masuk lagi dengan Google untuk memakai aplikasi."
         confirmLabel="Ya, keluar"
         destructive
-        onConfirm={() => router.push("/")}
+        onConfirm={() => void signOut().then(() => router.push("/"))}
       />
     </AppShell>
   )

@@ -4,7 +4,6 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { IconPlus } from "@tabler/icons-react"
 
-import { ADMIN_STORES } from "@/lib/admin-mock"
 import type { AdminStore } from "@/lib/admin-types"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -26,7 +25,7 @@ export function StoresTable() {
   return (
     <AdminPage title="Toko" description="Profil toko ritel peserta pilot.">
       <DataTable<AdminStore>
-        rows={ADMIN_STORES}
+        endpoint="/admin/stores"
         rowKey={(s) => s.id}
         rowHref={(s) => `/admin/pengguna/${s.owner.id}?tab=toko`}
         isDeleted={(s) => !!s.deleted_at}
@@ -52,7 +51,7 @@ export function StoresTable() {
             sort: (s) => s.name,
             cell: (s) => (
               <span className="flex items-center gap-3">
-                <Thumb kind="store" size="sm" />
+                <Thumb kind="store" size="sm" src={s.photo_url} />
                 <span className="font-medium">{s.name}</span>
                 {s.deleted_at && <DeletedChip />}
               </span>
@@ -88,8 +87,8 @@ export function StoresTable() {
           { label: "Lihat", onSelect: () => router.push(`/admin/pengguna/${s.owner.id}?tab=toko`) },
           { label: "Ubah", onSelect: () => router.push(`/admin/toko/${s.id}/ubah`) },
           s.deleted_at
-            ? { label: "Pulihkan profil", onSelect: () => profile.open("store", "restore", s.name) }
-            : { label: "Hapus profil", onSelect: () => profile.open("store", "delete", s.name), destructive: true },
+            ? { label: "Pulihkan profil", onSelect: () => profile.open("store", "restore", { id: s.id, name: s.name }) }
+            : { label: "Hapus profil", onSelect: () => profile.open("store", "delete", { id: s.id, name: s.name }), destructive: true },
         ]}
         emptyText="Belum ada toko terdaftar."
         emptyAction={create}

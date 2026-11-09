@@ -5,9 +5,11 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { IconInfoCircle } from "@tabler/icons-react"
 
-import type { AdminLevel, AdminUser } from "@/lib/admin-types"
+import type { AdminLevel, AdminUser, AdminUserDetail } from "@/lib/admin-types"
 import type { Role } from "@/lib/types"
-import { ADMIN_USERS } from "@/lib/admin-mock"
+import { adminApi, isApiError } from "@/lib/api"
+import { revalidate } from "@/lib/use-api"
+import { handleApiError } from "@/components/app/feedback"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -30,6 +32,11 @@ import { useAdmin } from "@/components/admin/admin-context"
 import { ConflictModal, RiskyActionModal } from "@/components/admin/risky-action"
 
 export type UserAction = "suspend" | "activate" | "delete" | "restore" | "hard_delete"
+
+/** Refetch every admin view that shows users (lists, detail, badges). */
+export function refreshUsers() {
+  return revalidate("admin", "/admin/users", "/admin/stores", "/admin/umkms", "/admin/dashboard", "/admin/audit-logs")
+}
 
 /** Suspend / activate / delete / restore / hard delete modals (A03, A04). */
 export function useUserActions() {
@@ -54,14 +61,20 @@ export function useUserActions() {
         notify
         destructive
         confirmLabel="Suspend"
-        onConfirm={() => {
+        onConfirm={async ({ reason, notify }) => {
+          const res = await adminApi.post<AdminUserDetail & { applications_active: number }>(`/admin/users/${u!.id}/suspend`, {
+            admin_reason: reason,
+            notify_user: notify,
+          })
           toast.add({ title: "Akun disuspend.", type: "success" })
-          if (u && u.stats.applications_active > 0)
+          if (res.applications_active > 0)
             toast.add({
-              title: `Akun ini masih punya ${u.stats.applications_active} pengajuan aktif.`,
+              title: `Akun ini masih punya ${res.applications_active} pengajuan aktif.`,
               description: "Buka tab Kerja sama untuk meninjaunya.",
               type: "info",
+              actionProps: { children: "Lihat", onClick: () => router.push(`/admin/pengguna/${u!.id}?tab=kerja-sama`) },
             })
+          void refreshUsers()
         }}
       />
       <RiskyActionModal
@@ -72,7 +85,11 @@ export function useUserActions() {
         reason="optional"
         notify
         confirmLabel="Aktifkan"
-        onConfirm={() => toast.add({ title: "Akun diaktifkan.", type: "success" })}
+        onConfirm={async ({ reason, notify }) => {
+          await adminApi.post(`/admin/users/${u!.id}/activate`, { admin_reason: reason, notify_user: notify })
+          toast.add({ title: "Akun diaktifkan.", type: "success" })
+          void refreshUsers()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "delete"}
@@ -81,7 +98,11 @@ export function useUserActions() {
         impacts={["Profil toko/UMKM, peluang, dan produk milik akun ikut disembunyikan", "Data bisa dipulihkan"]}
         destructive
         confirmLabel="Hapus"
-        onConfirm={() => toast.add({ title: "Akun dihapus.", type: "success" })}
+        onConfirm={async ({ reason }) => {
+          await adminApi.del(`/admin/users/${u!.id}`, { body: { admin_reason: reason } })
+          toast.add({ title: "Akun dihapus.", type: "success" })
+          void refreshUsers()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "restore"}
@@ -89,7 +110,11 @@ export function useUserActions() {
         title={`Pulihkan akun ${u?.name ?? ""}?`}
         impacts={["Akun, profil, peluang, dan produk yang terhapus bersamaan dikembalikan"]}
         confirmLabel="Pulihkan"
-        onConfirm={() => toast.add({ title: "Akun dipulihkan.", type: "success" })}
+        onConfirm={async ({ reason }) => {
+          await adminApi.post(`/admin/users/${u!.id}/restore`, { admin_reason: reason })
+          toast.add({ title: "Akun dipulihkan.", type: "success" })
+          void refreshUsers()
+        }}
       />
       <RiskyActionModal
         open={state?.action === "hard_delete"}
@@ -102,8 +127,10 @@ export function useUserActions() {
         confirmText={u?.email}
         destructive
         confirmLabel="Hapus permanen"
-        onConfirm={() => {
+        onConfirm={async ({ reason }) => {
+          await adminApi.del(`/admin/users/${u!.id}`, { query: { hard: true }, body: { admin_reason: reason } })
           toast.add({ title: "Akun dihapus permanen.", type: "success" })
+          void refreshUsers()
           router.push("/admin/pengguna")
         }}
       />
@@ -139,6 +166,9 @@ export function UserFormModal({
   /** Present → edit mode. */
   user?: AdminUser | null
 }) {
+  const [conflictLinks, setConflictLinks] = React.useState<{ label: string; href: string }[]>([])
+  const [conflictMessage, setConflictMessage] = React.useState("")
+  const [created, setCreated] = React.useState<string | null>(null)
   const router = useRouter()
   const { isSuperadmin } = useAdmin()
   const edit = !!user
@@ -170,36 +200,68 @@ export function UserFormModal({
     }
   }
 
-  const toggleRole = (r: Role, on: boolean) => {
-    // Removing a role that still has active applications → 409 has_active_relations.
-    if (!on && edit && user!.stats.applications_active > 0 && user!.roles.includes(r)) {
-      setConflict(true)
-      return
-    }
-    setRoles((prev) => (on ? [...prev, r] : prev.filter((x) => x !== r)))
-  }
+  const toggleRole = (r: Role, on: boolean) => setRoles((prev) => (on ? [...prev, r] : prev.filter((x) => x !== r)))
 
-  const submit = () => {
+  const submit = async () => {
     const e: Record<string, string> = {}
     if (!edit && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) e.email = "Masukkan email yang valid."
-    else if (!edit && ADMIN_USERS.some((u) => u.email === email.trim().toLowerCase()))
-      e.email = ADMIN_USERS.find((u) => u.email === email.trim().toLowerCase())?.deleted_at
-        ? "Email ini milik akun yang dihapus. Aktifkan 'Tampilkan yang dihapus' di daftar Pengguna untuk memulihkannya."
-        : "Email ini sudah terdaftar."
     if (!name.trim()) e.name = "Nama wajib diisi."
     if (!roles.length && !(edit && user!.is_admin)) e.roles = "Pilih minimal satu peran."
     setErrors(e)
     if (Object.keys(e).length) return
     setBusy(true)
-    setTimeout(() => {
-      setBusy(false)
-      onOpenChange(false)
-      if (edit) toast.add({ title: "Perubahan disimpan.", type: "success" })
-      else {
+    try {
+      if (edit && user) {
+        // PATCH only the fields that changed.
+        const body: Record<string, unknown> = {}
+        if (name.trim() !== user.name) body.name = name.trim()
+        if ([...roles].sort().join() !== [...user.roles].sort().join()) body.roles = roles
+        if (isSuperadmin && (isAdmin !== user.is_admin || (isAdmin && level !== user.admin_role))) {
+          body.is_admin = isAdmin
+          body.admin_role = isAdmin ? level : null
+        }
+        if (reason.trim()) body.admin_reason = reason.trim()
+        await adminApi.patch(`/admin/users/${user.id}`, body)
+        toast.add({ title: "Perubahan disimpan.", type: "success" })
+      } else {
+        const res = await adminApi.post<AdminUserDetail>("/admin/users", {
+          email: email.trim(),
+          name: name.trim(),
+          roles,
+          send_invitation_email: sendEmail,
+        })
         toast.add({ title: `Undangan dibuat untuk ${email.trim()}.`, type: "success" })
+        setCreated(res.id)
         setFollowUp({ email: email.trim(), roles })
       }
-    }, 700)
+      setBusy(false)
+      onOpenChange(false)
+      void refreshUsers()
+    } catch (err) {
+      setBusy(false)
+      if (isApiError(err) && err.code === "has_active_relations") {
+        const ids = (err.details.application_ids as string[] | undefined) ?? []
+        setConflictMessage(err.message)
+        setConflictLinks(ids.map((id) => ({ label: `Pengajuan ${id.slice(0, 8)}`, href: `/admin/pengajuan/${id}` })))
+        setConflict(true)
+        return
+      }
+      if (isApiError(err) && err.code === "conflict" && err.details.email) {
+        setErrors({ email: err.message })
+        return
+      }
+      if (isApiError(err) && err.code === "conflict") {
+        setErrors({ form: err.message })
+        return
+      }
+      handleApiError(err, {
+        admin: true,
+        onFieldErrors: (fields) => {
+          setErrors(fields)
+          return true
+        },
+      })
+    }
   }
 
   return (
@@ -217,9 +279,10 @@ export function UserFormModal({
             className="flex flex-col gap-6"
             onSubmit={(e) => {
               e.preventDefault()
-              submit()
+              void submit()
             }}
           >
+            {errors.form && <p className="bg-destructive/10 px-4 py-3 text-sm text-destructive">{errors.form}</p>}
             <FormField
               label="Email"
               htmlFor="u-email"
@@ -306,8 +369,8 @@ export function UserFormModal({
       <ConflictModal
         open={conflict}
         onOpenChange={setConflict}
-        message="Peran ini masih dipakai di pengajuan aktif. Selesaikan atau batalkan pengajuan tersebut dulu."
-        links={user ? [{ label: "Lihat pengajuan aktif", href: `/admin/pengguna/${user.id}?tab=kerja-sama` }] : []}
+        message={conflictMessage || "Peran ini masih dipakai di pengajuan aktif. Selesaikan atau batalkan pengajuan tersebut dulu."}
+        links={conflictLinks}
       />
 
       <Dialog open={!!followUp} onOpenChange={(o) => !o && setFollowUp(null)}>
@@ -322,16 +385,16 @@ export function UserFormModal({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => router.push(`/admin/pengguna/${ADMIN_USERS.find((u) => u.status === "invited")!.id}`)}>
+            <Button variant="outline" onClick={() => router.push(created ? `/admin/pengguna/${created}` : "/admin/pengguna")}>
               Nanti
             </Button>
             {followUp?.roles.includes("store") && (
-              <Button render={<Link href="/admin/toko/baru" />} nativeButton={false}>
+              <Button render={<Link href={`/admin/toko/baru?user_id=${created ?? ""}`} />} nativeButton={false}>
                 Buat profil toko
               </Button>
             )}
             {followUp?.roles.includes("umkm") && (
-              <Button render={<Link href="/admin/umkm/baru" />} nativeButton={false}>
+              <Button render={<Link href={`/admin/umkm/baru?user_id=${created ?? ""}`} />} nativeButton={false}>
                 Buat profil UMKM
               </Button>
             )}

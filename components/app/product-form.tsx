@@ -4,9 +4,10 @@ import * as React from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 
 import { cn } from "@/lib/utils"
-import { formatRupiah } from "@/lib/format"
-import { CATEGORIES } from "@/lib/mock-data"
-import type { Product } from "@/lib/types"
+import { addDaysIso, formatRupiah } from "@/lib/format"
+import { api, isApiError } from "@/lib/api"
+import { revalidate, useApi, useNow } from "@/lib/use-api"
+import type { Category, Product } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -15,21 +16,55 @@ import { Label } from "@/components/ui/label"
 import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 import { AppShell } from "@/components/app/app-shell"
-import { ConfirmDialog, Section } from "@/components/app/blocks"
+import { ConfirmDialog, PageSkeletonBody, Section } from "@/components/app/blocks"
+import { LoadError, handleApiError, showConflict } from "@/components/app/feedback"
 import { FormField } from "@/components/app/form-field"
 import { CharCount, ChoiceChips, FileUpload, RupiahInput, SuffixInput, TagInput } from "@/components/app/inputs"
 
+/** API field → form error key (scroll target `f-<key>`). */
+const FIELD: Record<string, string> = {
+  photo_file_ids: "photos",
+  name: "name",
+  category_id: "category",
+  description: "description",
+  tags: "tags",
+  base_price: "basePrice",
+  suggested_retail_price: "retailPrice",
+  shelf_life_days: "expiry",
+  expiry_date: "expiry",
+}
+
+/** P14 edit mode: loads `GET /me/products/{id}` first. */
+export function EditProductForm({ id }: { id: string }) {
+  const q = useApi<Product>("user", `/me/products/${id}`)
+  if (q.data) return <ProductForm key={q.data.id} product={q.data} />
+  return (
+    <AppShell role="umkm" title="Ubah produk" back="/umkm/produk" hideNav>
+      {q.error ? (
+        <LoadError error={q.error} onRetry={q.reload} backHref="/umkm/produk" backLabel="Kembali ke produk" />
+      ) : (
+        <PageSkeletonBody />
+      )}
+    </AppShell>
+  )
+}
+
+/** P14 · Form produk (`POST /me/products` or `PATCH /me/products/{id}`). */
 export function ProductForm({ product }: { product?: Product }) {
   const router = useRouter()
   const params = useSearchParams()
   const returnTo = params.get("return")
   const edit = !!product
   const p = product
-  const backHref = returnTo ?? "/umkm/produk"
+  const backHref = returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/umkm/produk"
+  const now = useNow()
+  const categoriesQ = useApi<Category[]>("user", "/categories")
+  const CATEGORIES = categoriesQ.data ?? []
 
-  const [photoCount, setPhotoCount] = React.useState(p?.photo_count ?? 0)
+  const [photoIds, setPhotoIds] = React.useState<string[]>(p?.photo_file_ids ?? [])
+  const photoCount = photoIds.length
   const [name, setName] = React.useState(p?.name ?? "")
-  const [categoryId, setCategoryId] = React.useState<number | null>(p?.category.id ?? null)
+  const [categoryId, setCategoryId] = React.useState<string | null>(p?.category.id ?? null)
   const [description, setDescription] = React.useState(p?.description ?? "")
   const [tags, setTags] = React.useState<string[]>(p?.tags ?? [])
   const [basePrice, setBasePrice] = React.useState<number | null>(p?.base_price ?? null)
@@ -61,11 +96,54 @@ export function ProductForm({ product }: { product?: Product }) {
       document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
       return
     }
+    void save()
+  }
+
+  const save = async () => {
     setSaving(true)
-    setTimeout(() => {
+    const body = {
+      photo_file_ids: photoIds,
+      name: name.trim(),
+      category_id: categoryId,
+      description,
+      tags,
+      base_price: basePrice,
+      suggested_retail_price: retailPrice,
+      shelf_life_days: expiryMode === "shelf" ? Number(shelfLife) : null,
+      expiry_date: expiryMode === "date" ? expiryDate : null,
+    }
+    try {
+      if (edit) await api.patch(`/me/products/${p!.id}`, body)
+      else await api.post("/me/products", body)
       toast.add({ title: "Produk disimpan.", type: "success" })
+      void revalidate("user", "/me/products", "/opportunities")
       router.push(backHref)
-    }, 700)
+    } catch (err) {
+      setSaving(false)
+      handleApiError(err, {
+        onFieldErrors: (fields) => {
+          const mapped: Record<string, string> = {}
+          for (const [k, v] of Object.entries(fields)) mapped[FIELD[k.split(".")[0]] ?? "form"] = v
+          setErrors(mapped)
+          const first = Object.keys(mapped)[0]
+          document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+          return Object.keys(mapped).some((k) => k !== "form")
+        },
+      })
+    }
+  }
+
+  const archive = async () => {
+    try {
+      await api.del(`/me/products/${p!.id}`)
+      toast.add({ title: "Produk diarsipkan.", type: "success" })
+      void revalidate("user", "/me/products")
+      router.push("/umkm/produk")
+    } catch (err) {
+      if (isApiError(err) && (err.code === "conflict" || err.code === "has_active_relations"))
+        showConflict({ title: "Tidak bisa diarsipkan", message: "Produk masih ada di pengajuan aktif." })
+      else handleApiError(err)
+    }
   }
 
   return (
@@ -93,6 +171,8 @@ export function ProductForm({ product }: { product?: Product }) {
         </div>
       }
     >
+      {errors.form && <p className="bg-destructive/10 px-5 py-4 text-sm text-destructive">{errors.form}</p>}
+
       {edit && (
         <p className="bg-background px-5 py-4 text-sm shadow-sm ring-1 ring-foreground/5">
           Sedang dijual di <span className="font-medium">{p!.active_placements} toko</span>
@@ -101,7 +181,7 @@ export function ProductForm({ product }: { product?: Product }) {
 
       <Section title="1 · Foto" description="1–5 foto. Foto pertama menjadi foto utama.">
         <div id="f-photos" className="flex flex-col gap-2">
-          <FileUpload max={5} initialCount={p?.photo_count ?? 0} onCountChange={setPhotoCount} />
+          <FileUpload purpose="product_photo" max={5} initial={p?.photos ?? []} onChange={setPhotoIds} />
           {errors.photos && <p className="text-sm text-destructive">{errors.photos}</p>}
         </div>
       </Section>
@@ -204,7 +284,7 @@ export function ProductForm({ product }: { product?: Product }) {
               </FormField>
             ) : (
               <FormField label="Tanggal kedaluwarsa" htmlFor="expiryDate" required error={errors.expiry}>
-                <Input id="expiryDate" type="date" min="2026-11-05" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
+                <Input id="expiryDate" type="date" min={now ? addDaysIso(1, now) : undefined} value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
               </FormField>
             )}
           </div>
@@ -226,10 +306,7 @@ export function ProductForm({ product }: { product?: Product }) {
         description="Produk tidak bisa dipilih untuk pengajuan baru."
         confirmLabel="Ya, arsipkan"
         destructive
-        onConfirm={() => {
-          toast.add({ title: "Produk diarsipkan.", type: "success" })
-          router.push("/umkm/produk")
-        }}
+        onConfirm={() => void archive()}
       />
     </AppShell>
   )

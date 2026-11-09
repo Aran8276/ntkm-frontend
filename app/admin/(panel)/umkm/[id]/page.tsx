@@ -1,26 +1,18 @@
 import { Suspense } from "react"
-import { notFound, redirect } from "next/navigation"
+import type { Metadata } from "next"
 
 import { PageSkeleton } from "@/components/app/blocks"
-import { ADMIN_UMKMS, findUmkm } from "@/lib/admin-mock"
+import { ProfileShortcut } from "@/components/admin/profile-admin-form"
 
-export function generateStaticParams() {
-  return ADMIN_UMKMS.map((u) => ({ id: u.id }))
-}
+export const metadata: Metadata = { title: "Profil UMKM" }
 
-/** Shortcut: /admin/umkm/:id → owner's A04 "Profil UMKM" tab. */
+// `params` is runtime data under Cache Components, so read it inside <Suspense>.
 export default function UmkmShortcut({ params }: PageProps<"/admin/umkm/[id]">) {
   return (
     <Suspense fallback={<PageSkeleton />}>
-      <Go params={params} />
+      {params.then(({ id }) => (
+        <ProfileShortcut kind="umkm" id={id} />
+      ))}
     </Suspense>
   )
-}
-
-async function Go({ params }: Pick<PageProps<"/admin/umkm/[id]">, "params">) {
-  const { id } = await params
-  const u = findUmkm(id)
-  if (!u) notFound()
-  redirect(`/admin/pengguna/${u.owner.id}?tab=umkm`)
-  return null
 }

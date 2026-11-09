@@ -4,7 +4,6 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 import { IconPlus } from "@tabler/icons-react"
 
-import { ADMIN_USERS } from "@/lib/admin-mock"
 import type { AdminUser } from "@/lib/admin-types"
 import { Button } from "@/components/ui/button"
 import { AdminPage } from "@/components/admin/admin-page"
@@ -35,7 +34,7 @@ export function UsersTable() {
   return (
     <AdminPage title="Pengguna" description="Semua akun peserta pilot dan admin.">
       <DataTable<AdminUser>
-        rows={ADMIN_USERS}
+        endpoint="/admin/users"
         rowKey={(u) => u.id}
         rowHref={(u) => `/admin/pengguna/${u.id}`}
         isDeleted={(u) => !!u.deleted_at}

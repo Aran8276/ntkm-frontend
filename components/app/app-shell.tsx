@@ -23,9 +23,9 @@ import {
 } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
-import { formatCount } from "@/lib/format"
-import { ME, UNREAD_COUNT } from "@/lib/mock-data"
-import type { Role } from "@/lib/types"
+import { formatCount, initials } from "@/lib/format"
+import { useApi, useHydrated } from "@/lib/use-api"
+import type { Me, Role } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import {
   Sheet,
@@ -35,7 +35,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Logo } from "@/components/app/logo"
-import { useRole } from "@/components/app/providers"
+import { onboardingDone, useRole, useSession } from "@/components/app/providers"
+import { Skeleton } from "@/components/ui/skeleton"
 
 interface NavItem {
   href: string
@@ -80,7 +81,59 @@ interface AppShellProps {
   width?: "default" | "wide"
   /** Sticky bar pinned to the bottom of the viewport (form submit, actions). */
   bottomBar?: React.ReactNode
+  /**
+   * Access guard: "full" (default) requires login, a role and finished
+   * onboarding for the page role; "onboarding" skips the onboarding check
+   * (profile forms in onboarding mode).
+   */
+  access?: "full" | "onboarding"
   children: React.ReactNode
+}
+
+/**
+ * Access guard from the spec, checked in order: no token → /masuk; no roles →
+ * /pilih-peran; onboarding of the page role unfinished → /onboarding/...;
+ * role not owned → dashboard of the active role. Returns true once the page
+ * may render.
+ */
+export function useAccessGuard(pageRole: Role | undefined, access: "full" | "onboarding") {
+  const { signedIn, me, role } = useSession()
+  const hydrated = useHydrated()
+  const router = useRouter()
+
+  let redirect: string | null = null
+  if (hydrated) {
+    if (!signedIn) redirect = "/masuk"
+    else if (me) redirect = guardRedirect(me, pageRole, role, access)
+  }
+
+  React.useEffect(() => {
+    if (!redirect) return
+    if (redirect === "/masuk") {
+      const next = window.location.pathname + window.location.search
+      router.replace(`/masuk?next=${encodeURIComponent(next)}`)
+    } else router.replace(redirect)
+  }, [redirect, router])
+
+  return hydrated && signedIn && !!me && !redirect
+}
+
+export function guardRedirect(me: Me, pageRole: Role | undefined, activeRole: Role, access: "full" | "onboarding" = "full") {
+  if (!me.roles.length) return "/pilih-peran"
+  if (pageRole && !me.roles.includes(pageRole)) return ROLE_HOME[me.roles.includes(activeRole) ? activeRole : me.roles[0]]
+  const r = pageRole ?? (me.roles.includes(activeRole) ? activeRole : me.roles[0])
+  if (access === "full" && !onboardingDone(me, r)) return ONBOARDING[r]
+  return null
+}
+
+export const ONBOARDING: Record<Role, string> = { store: "/onboarding/toko", umkm: "/onboarding/umkm" }
+
+/** Where a signed-in user belongs (login, landing, role picker redirects). */
+export function homeFor(me: Me, activeRole: Role) {
+  if (!me.roles.length) return "/pilih-peran"
+  const r = me.roles.includes(activeRole) ? activeRole : me.roles[0]
+  for (const x of [r, ...me.roles]) if (!onboardingDone(me, x)) return ONBOARDING[x]
+  return ROLE_HOME[r]
 }
 
 export function AppShell({
@@ -90,11 +143,13 @@ export function AppShell({
   hideNav = false,
   width = "default",
   bottomBar,
+  access = "full",
   children,
 }: AppShellProps) {
   const { role: activeRole, setRole } = useRole()
   const role = pageRole ?? activeRole
   const pathname = usePathname()
+  const ready = useAccessGuard(pageRole, access)
 
   // Visiting a role-specific page makes that role active.
   React.useEffect(() => {
@@ -145,11 +200,11 @@ export function AppShell({
           )}
         >
           <InstallPrompt />
-          {children}
+          {ready ? children : <ShellSkeleton />}
         </main>
       </div>
 
-      {bottomBar && (
+      {ready && bottomBar && (
         <div
           className={cn(
             "fixed inset-x-0 z-30 border-t bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/85",
@@ -172,7 +227,19 @@ export function AppShell({
   )
 }
 
+function ShellSkeleton() {
+  return (
+    <div className="flex flex-col gap-6" aria-busy>
+      <Skeleton className="h-4 w-32 bg-background" />
+      <Skeleton className="h-8 w-2/3 bg-background" />
+      <Skeleton className="h-32 w-full bg-background" />
+      <Skeleton className="h-48 w-full bg-background" />
+    </div>
+  )
+}
+
 function Sidebar({ role, pathname }: { role: Role; pathname: string }) {
+  const { me } = useSession()
   const main = NAV[role].slice(0, 4)
   return (
     <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r bg-background lg:flex">
@@ -193,12 +260,17 @@ function Sidebar({ role, pathname }: { role: Role; pathname: string }) {
       </nav>
       <div className="border-t p-4">
         <div className="flex items-center gap-3">
-          <span className="flex size-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
-            RW
-          </span>
+          {me?.avatar_url ? (
+            // eslint-disable-next-line @next/next/no-img-element -- Google avatar URL
+            <img src={me.avatar_url} alt="" className="size-9 rounded-full object-cover" />
+          ) : (
+            <span className="flex size-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+              {initials(me?.name ?? "")}
+            </span>
+          )}
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium">{ME.name}</p>
-            <p className="truncate text-xs text-muted-foreground">{ME.email}</p>
+            <p className="truncate text-sm font-medium">{me?.name ?? " "}</p>
+            <p className="truncate text-xs text-muted-foreground">{me?.email ?? " "}</p>
           </div>
         </div>
       </div>
@@ -328,8 +400,18 @@ function RoleSwitcher({ role }: { role: Role }) {
   )
 }
 
+/** Unread badge: `GET /notifications/unread-count` every 60 s and on returning to the tab. */
+export function useUnreadCount() {
+  const { signedIn } = useSession()
+  const q = useApi<{ count: number }>("user", signedIn ? "/notifications/unread-count" : null, undefined, {
+    refreshInterval: 60_000,
+    revalidateOnFocus: true,
+  })
+  return q.data?.count ?? 0
+}
+
 function NotificationBell() {
-  const count = UNREAD_COUNT
+  const count = useUnreadCount()
   return (
     <Link
       href="/notifikasi"

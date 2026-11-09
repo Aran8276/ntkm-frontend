@@ -14,15 +14,11 @@ import {
 } from "@tabler/icons-react"
 
 import { formatDateTime } from "@/lib/format"
-import {
-  ADMIN_APPLICATIONS,
-  ADMIN_STORES,
-  ADMIN_UMKMS,
-  auditBy,
-  auditFor,
-  findUser,
-} from "@/lib/admin-mock"
-import type { AdminUser, LegalKind } from "@/lib/admin-types"
+import type { Paginated } from "@/lib/api"
+import { useApi } from "@/lib/use-api"
+import type { AdminApplicationRow, AdminStore, AdminUmkm, AdminUserDetail, AuditLog, LegalKind } from "@/lib/admin-types"
+import { LoadError } from "@/components/app/feedback"
+import { TableSkeleton } from "@/components/admin/data-table"
 import { Button } from "@/components/ui/button"
 import { EmptyState, Section, Thumb } from "@/components/app/blocks"
 import { useQueryState } from "@/hooks/use-query-state"
@@ -58,12 +54,22 @@ import { UserFormModal, useUserActions } from "@/components/admin/user-actions"
 
 type Tab = "akun" | "toko" | "umkm" | "kerja-sama" | "aktivitas"
 
-/** A04 · Detail pengguna. */
+type AdminUser = AdminUserDetail
+
+/** A04 · Detail pengguna: `GET /admin/users/{id}` (+ profile/applications/audit per tab). */
 export function UserDetail({ id }: { id: string }) {
-  const u = findUser(id)!
+  const q = useApi<AdminUserDetail>("admin", `/admin/users/${id}`)
   const [tab, setTab] = useQueryState<Tab>("tab", "akun")
   const { open, modals } = useUserActions()
   const [editing, setEditing] = React.useState(false)
+
+  const u = q.data
+  if (!u)
+    return (
+      <AdminPage breadcrumb={[{ label: "Pengguna", href: "/admin/pengguna" }]} title="Detail pengguna">
+        {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref="/admin/pengguna" backLabel="Kembali ke Pengguna" /> : <TableSkeleton />}
+      </AdminPage>
+    )
 
   return (
     <AdminPage
@@ -85,7 +91,7 @@ export function UserDetail({ id }: { id: string }) {
     >
       {u.status === "suspended" && (
         <Banner tone="danger" icon={IconUserOff}>
-          Disuspend {formatDateTime(u.suspended_at!)}: {u.suspended_reason}
+          Disuspend {u.suspended_at ? formatDateTime(u.suspended_at) : ""}: {u.suspended_reason ?? "—"}
         </Banner>
       )}
       {u.deleted_at && (
@@ -97,7 +103,7 @@ export function UserDetail({ id }: { id: string }) {
             </Button>
           }
         >
-          Data ini dihapus pada {formatDateTime(u.deleted_at)} oleh {u.deleted_by}.
+          Data ini dihapus pada {formatDateTime(u.deleted_at)} oleh {u.deleted_by?.name ?? "—"}.
         </Banner>
       )}
       {u.status === "invited" && (
@@ -213,7 +219,9 @@ function AccountTab({
 
 function StoreTab({ user: u }: { user: AdminUser }) {
   const profile = useProfileActions()
-  const s = ADMIN_STORES.find((x) => x.id === u.store_profile?.id)
+  const q = useApi<AdminStore>("admin", u.store_profile ? `/admin/stores/${u.store_profile.id}` : null)
+  const s = q.data
+  if (u.store_profile && !s) return q.error ? <LoadError error={q.error} onRetry={q.reload} /> : <TableSkeleton />
   if (!s)
     return (
       <EmptyState
@@ -231,11 +239,11 @@ function StoreTab({ user: u }: { user: AdminUser }) {
     <DetailColumns
       main={
         <>
-          {s.deleted_at && <Banner>Data ini dihapus pada {formatDateTime(s.deleted_at)} oleh {s.deleted_by}.</Banner>}
+          {s.deleted_at && <Banner>Data ini dihapus pada {formatDateTime(s.deleted_at)} oleh {s.deleted_by?.name ?? "—"}.</Banner>}
           <Section title="Profil">
             <div className="flex flex-col gap-6">
               <div className="flex items-center gap-4">
-                <Thumb kind="store" size="lg" />
+                <Thumb kind="store" size="lg" src={s.photo_url} />
                 <div>
                   <p className="text-lg font-medium">{s.name}</p>
                   <p className="text-sm text-muted-foreground">Diperbarui {formatDateTime(s.updated_at)}</p>
@@ -272,11 +280,11 @@ function StoreTab({ user: u }: { user: AdminUser }) {
                 <IconEdit data-icon="inline-start" /> Ubah
               </Button>
               {s.deleted_at ? (
-                <Button variant="outline" onClick={() => profile.open("store", "restore", s.name)}>
+                <Button variant="outline" onClick={() => profile.open("store", "restore", { id: s.id, name: s.name })}>
                   <IconRestore data-icon="inline-start" /> Pulihkan profil
                 </Button>
               ) : (
-                <Button variant="destructive" onClick={() => profile.open("store", "delete", s.name)}>
+                <Button variant="destructive" onClick={() => profile.open("store", "delete", { id: s.id, name: s.name })}>
                   <IconTrash data-icon="inline-start" /> Hapus profil
                 </Button>
               )}
@@ -298,7 +306,9 @@ const LEGAL_ROWS: { key: LegalKind; label: string; field: "nib" | "pirt_number" 
 
 function UmkmTab({ user: u }: { user: AdminUser }) {
   const profile = useProfileActions()
-  const m = ADMIN_UMKMS.find((x) => x.id === u.umkm_profile?.id)
+  const q = useApi<AdminUmkm>("admin", u.umkm_profile ? `/admin/umkms/${u.umkm_profile.id}` : null)
+  const m = q.data
+  if (u.umkm_profile && !m) return q.error ? <LoadError error={q.error} onRetry={q.reload} /> : <TableSkeleton />
   if (!m)
     return (
       <EmptyState
@@ -316,11 +326,11 @@ function UmkmTab({ user: u }: { user: AdminUser }) {
     <DetailColumns
       main={
         <>
-          {m.deleted_at && <Banner>Data ini dihapus pada {formatDateTime(m.deleted_at)} oleh {m.deleted_by}.</Banner>}
+          {m.deleted_at && <Banner>Data ini dihapus pada {formatDateTime(m.deleted_at)} oleh {m.deleted_by?.name ?? "—"}.</Banner>}
           <Section title="Profil">
             <div className="flex flex-col gap-6">
               <div className="flex items-center gap-4">
-                <Thumb kind="umkm" size="lg" />
+                <Thumb kind="umkm" size="lg" src={m.logo_url} />
                 <div>
                   <p className="text-lg font-medium">{m.business_name}</p>
                   <p className="text-sm text-muted-foreground">Diperbarui {formatDateTime(m.updated_at)}</p>
@@ -334,7 +344,7 @@ function UmkmTab({ user: u }: { user: AdminUser }) {
                   { label: "Deskripsi", value: m.description, full: true },
                 ]}
               />
-              <StaticMap lat={-7.97} lng={112.63} />
+              <StaticMap lat={m.lat} lng={m.lng} />
             </div>
           </Section>
           <Section title="Legalitas">
@@ -362,7 +372,7 @@ function UmkmTab({ user: u }: { user: AdminUser }) {
                           </td>
                           <td className="px-3 py-3 text-muted-foreground">{v.note || "—"}</td>
                           <td className="px-6 py-3 text-xs text-muted-foreground">
-                            {v.decided_by ? `${v.decided_by} · ${formatDateTime(v.decided_at!)}` : "—"}
+                            {v.decided_by ? `${v.decided_by.name}${v.decided_at ? ` · ${formatDateTime(v.decided_at)}` : ""}` : "—"}
                           </td>
                         </tr>
                       )
@@ -395,11 +405,11 @@ function UmkmTab({ user: u }: { user: AdminUser }) {
                 <IconShieldCheck data-icon="inline-start" /> Verifikasi legalitas
               </Button>
               {m.deleted_at ? (
-                <Button variant="outline" onClick={() => profile.open("umkm", "restore", m.business_name)}>
+                <Button variant="outline" onClick={() => profile.open("umkm", "restore", { id: m.id, name: m.business_name })}>
                   <IconRestore data-icon="inline-start" /> Pulihkan profil
                 </Button>
               ) : (
-                <Button variant="destructive" onClick={() => profile.open("umkm", "delete", m.business_name)}>
+                <Button variant="destructive" onClick={() => profile.open("umkm", "delete", { id: m.id, name: m.business_name })}>
                   <IconTrash data-icon="inline-start" /> Hapus profil
                 </Button>
               )}
@@ -414,8 +424,16 @@ function UmkmTab({ user: u }: { user: AdminUser }) {
 }
 
 function PartnershipTab({ user: u }: { user: AdminUser }) {
-  const asStore = ADMIN_APPLICATIONS.filter((a) => a.store.id === u.store_profile?.id)
-  const asUmkm = ADMIN_APPLICATIONS.filter((a) => a.umkm.id === u.umkm_profile?.id)
+  const storeQ = useApi<Paginated<AdminApplicationRow>>("admin", u.store_profile ? "/admin/applications" : null, {
+    store_id: u.store_profile?.id,
+    page_size: 100,
+  })
+  const umkmQ = useApi<Paginated<AdminApplicationRow>>("admin", u.umkm_profile ? "/admin/applications" : null, {
+    umkm_id: u.umkm_profile?.id,
+    page_size: 100,
+  })
+  const asStore = storeQ.data?.results ?? []
+  const asUmkm = umkmQ.data?.results ?? []
   if (!u.store_profile && !u.umkm_profile)
     return <p className="bg-background p-10 text-center text-sm text-muted-foreground shadow-sm">Belum ada pengajuan.</p>
   return (
@@ -435,14 +453,16 @@ function PartnershipTab({ user: u }: { user: AdminUser }) {
 }
 
 function ActivityTab({ user: u }: { user: AdminUser }) {
+  const targetQ = useApi<Paginated<AuditLog>>("admin", "/admin/audit-logs", { target_type: "user", target_id: u.id, page_size: 50 })
+  const byQ = useApi<Paginated<AuditLog>>("admin", u.is_admin ? "/admin/audit-logs" : null, { admin_id: u.id, page_size: 50 })
   return (
     <div className="flex flex-col gap-6">
       <Section title="Tindakan admin terhadap akun ini">
-        <AuditMiniTable rows={auditFor("user", u.id)} />
+        <AuditMiniTable rows={targetQ.data?.results ?? []} empty={targetQ.loading ? "Memuat…" : undefined} />
       </Section>
       {u.is_admin && (
         <Section title="Tindakan yang dilakukan akun ini">
-          <AuditMiniTable rows={auditBy(u.id)} />
+          <AuditMiniTable rows={byQ.data?.results ?? []} empty={byQ.loading ? "Memuat…" : undefined} />
         </Section>
       )}
     </div>

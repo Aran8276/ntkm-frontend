@@ -5,8 +5,12 @@ import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { IconInfoCircle } from "@tabler/icons-react"
 
-import { ADMIN_USERS } from "@/lib/admin-mock"
+import { adminApi, isApiError } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
 import type { AdminStore, AdminUmkm, LegalKind } from "@/lib/admin-types"
+import { LoadError, formLevelError, handleApiError } from "@/components/app/feedback"
+import { useUsers } from "@/components/admin/options"
+import { TableSkeleton } from "@/components/admin/data-table"
 import type { OperatingHour } from "@/lib/types"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Input } from "@/components/ui/input"
@@ -29,8 +33,42 @@ type Props =
   | { kind: "store"; profile?: AdminStore }
   | { kind: "umkm"; profile?: AdminUmkm }
 
+const PATH = { store: "/admin/stores", umkm: "/admin/umkms" } as const
+
+/** A08 loader: create (`?user_id=` prefills the owner) or edit (`GET /admin/<kind>s/{id}`). */
+export function ProfileAdminFormPage({ kind, id }: { kind: "store" | "umkm"; id?: string }) {
+  const q = useApi<AdminStore | AdminUmkm>("admin", id ? `${PATH[kind]}/${id}` : null)
+  if (!id) return kind === "store" ? <ProfileAdminForm kind="store" /> : <ProfileAdminForm kind="umkm" />
+  if (!q.data)
+    return (
+      <AdminPage breadcrumb={[{ label: kind === "store" ? "Toko" : "UMKM", href: kind === "store" ? "/admin/toko" : "/admin/umkm" }]} title="Ubah profil">
+        {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref={kind === "store" ? "/admin/toko" : "/admin/umkm"} backLabel="Kembali ke daftar" /> : <TableSkeleton />}
+      </AdminPage>
+    )
+  return kind === "store" ? (
+    <ProfileAdminForm key={q.data.id} kind="store" profile={q.data as AdminStore} />
+  ) : (
+    <ProfileAdminForm key={q.data.id} kind="umkm" profile={q.data as AdminUmkm} />
+  )
+}
+
+/** `/admin/toko/:id` and `/admin/umkm/:id` → owner's A04 tab. */
+export function ProfileShortcut({ kind, id }: { kind: "store" | "umkm"; id: string }) {
+  const router = useRouter()
+  const q = useApi<AdminStore | AdminUmkm>("admin", `${PATH[kind]}/${id}`)
+  const ownerId = q.data?.owner.id
+  React.useEffect(() => {
+    if (ownerId) router.replace(`/admin/pengguna/${ownerId}?tab=${kind === "store" ? "toko" : "umkm"}`)
+  }, [ownerId, kind, router])
+  return (
+    <AdminPage title={kind === "store" ? "Profil toko" : "Profil UMKM"}>
+      {q.error ? <LoadError error={q.error} onRetry={q.reload} backHref={kind === "store" ? "/admin/toko" : "/admin/umkm"} backLabel="Kembali ke daftar" /> : <TableSkeleton />}
+    </AdminPage>
+  )
+}
+
 /** A08 · Form profil toko / UMKM (create & edit). */
-export function ProfileAdminForm(props: Props) {
+function ProfileAdminForm(props: Props) {
   const { kind } = props
   const router = useRouter()
   const params = useSearchParams()
@@ -40,7 +78,8 @@ export function ProfileAdminForm(props: Props) {
   const label = kind === "store" ? "toko" : "UMKM"
 
   const [ownerId, setOwnerId] = React.useState<string | null>(props.profile?.owner.id ?? params.get("user_id"))
-  const owner = ADMIN_USERS.find((u) => u.id === ownerId)
+  const users = useUsers(undefined, !edit)
+  const owner = props.profile?.owner ?? users.find((u) => u.id === ownerId)
   const [name, setName] = React.useState(store?.name ?? umkm?.business_name ?? "")
   const [ownerName, setOwnerName] = React.useState(umkm?.owner_name ?? owner?.name ?? "")
   const [phone, setPhone] = React.useState(props.profile?.phone ?? "")
@@ -52,6 +91,12 @@ export function ProfileAdminForm(props: Props) {
     pirt: umkm?.legal.pirt_number ?? "",
     halal: umkm?.legal.halal_number ?? "",
   })
+  const [fileIds, setFileIds] = React.useState<string[]>(
+    store?.photo_file_id ? [store.photo_file_id] : umkm?.logo_file_id ? [umkm.logo_file_id] : []
+  )
+  const [docIds, setDocIds] = React.useState<string[]>(umkm?.legal_document_file_ids ?? [])
+  const [loc, setLoc] = React.useState({ lat: props.profile?.lat ?? -7.9467, lng: props.profile?.lng ?? 112.6159 })
+  const [formError, setFormError] = React.useState<string | undefined>()
   const [reason, setReason] = React.useState("")
   const [notify, setNotify] = React.useState(true)
   const [errors, setErrors] = React.useState<Record<string, string>>({})
@@ -62,15 +107,16 @@ export function ProfileAdminForm(props: Props) {
     set(v)
   }
 
-  const ownerOptions = ADMIN_USERS.filter((u) => !u.deleted_at).map((u) => ({
-    value: u.id,
-    label: u.name,
-    description: u.email,
-    disabledReason:
-      (kind === "store" ? u.store_profile : u.umkm_profile) && u.id !== props.profile?.owner.id
-        ? `Sudah punya profil ${label}`
-        : undefined,
-  }))
+  const ownerOptions = edit
+    ? [{ value: props.profile!.owner.id, label: props.profile!.owner.name, description: props.profile!.owner.email }]
+    : users
+        .filter((u) => !u.deleted_at)
+        .map((u) => ({
+          value: u.id,
+          label: u.name || u.email,
+          description: u.email,
+          disabledReason: (kind === "store" ? u.store_profile : u.umkm_profile) ? `Sudah punya profil ${label}` : undefined,
+        }))
 
   const sections = [
     { id: "pemilik", title: "Pemilik" },
@@ -95,12 +141,69 @@ export function ProfileAdminForm(props: Props) {
       document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
       return
     }
+    void save()
+  }
+
+  const save = async () => {
     setSaving(true)
-    setTimeout(() => {
+    setFormError(undefined)
+    const common = {
+      phone: phone.replace(/[\s-]/g, ""),
+      address: address.trim(),
+      lat: loc.lat,
+      lng: loc.lng,
+    }
+    const body =
+      kind === "store"
+        ? { ...common, name: name.trim(), photo_file_id: fileIds[0] ?? null, operating_hours: hours }
+        : {
+            ...common,
+            business_name: name.trim(),
+            owner_name: ownerName.trim(),
+            description,
+            logo_file_id: fileIds[0] ?? null,
+            legal: { nib: legal.nib || null, pirt_number: legal.pirt.trim() || null, halal_number: legal.halal.trim() || null },
+            legal_document_file_ids: docIds,
+          }
+    try {
+      if (edit) await adminApi.patch(`${PATH[kind]}/${props.profile!.id}`, { ...body, admin_reason: reason || undefined, notify_user: notify })
+      else await adminApi.post(PATH[kind], { ...body, user_id: ownerId })
       toast.add({ title: `Profil ${label} ${edit ? "disimpan" : "dibuat"}.`, type: "success" })
       setDirty(false)
+      void revalidate("admin", "/admin/users", "/admin/stores", "/admin/umkms", "/admin/audit-logs")
       router.push(`/admin/pengguna/${ownerId}?tab=${kind === "store" ? "toko" : "umkm"}`)
-    }, 700)
+    } catch (err) {
+      setSaving(false)
+      if (isApiError(err) && err.code === "conflict") {
+        setErrors({ owner: err.message })
+        document.getElementById("f-owner")?.scrollIntoView({ behavior: "smooth", block: "center" })
+        return
+      }
+      const FIELD: Record<string, string> = {
+        user_id: "owner",
+        name: "name",
+        business_name: "name",
+        owner_name: "ownerName",
+        phone: "phone",
+        description: "description",
+        address: "address",
+        lat: "address",
+        lng: "address",
+        operating_hours: "hours",
+      }
+      handleApiError(err, {
+        admin: true,
+        onFieldErrors: (fields, apiErr) => {
+          const mapped: Record<string, string> = {}
+          for (const [k, v] of Object.entries(fields)) if (FIELD[k.split(".")[0]]) mapped[FIELD[k.split(".")[0]]] ??= v
+          setErrors(mapped)
+          setFormError(formLevelError(apiErr, Object.keys(FIELD)) ?? (Object.keys(mapped).length ? undefined : apiErr.message))
+          const first = Object.keys(mapped)[0]
+          if (first) document.getElementById(`f-${first}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+          return true
+        },
+      })
+    }
   }
 
   const listHref = kind === "store" ? "/admin/toko" : "/admin/umkm"
@@ -119,6 +222,7 @@ export function ProfileAdminForm(props: Props) {
         onSubmit={submit}
         cancelHref={edit && ownerId ? `/admin/pengguna/${ownerId}?tab=${kind === "store" ? "toko" : "umkm"}` : listHref}
       >
+        {formError && <p className="bg-destructive/10 px-5 py-4 text-sm text-destructive">{formError}</p>}
         <FormSectionCard id="pemilik" title="Pemilik">
           <div id="f-owner" className="flex flex-col gap-4">
             <FormField label="Akun pemilik" required error={errors.owner}>
@@ -130,7 +234,7 @@ export function ProfileAdminForm(props: Props) {
                 placeholder="Cari nama atau email akun…"
                 onChange={touch((v: string | null) => {
                   setOwnerId(v)
-                  if (kind === "umkm" && !ownerName) setOwnerName(ADMIN_USERS.find((u) => u.id === v)?.name ?? "")
+                  if (kind === "umkm" && !ownerName) setOwnerName(users.find((u) => u.id === v)?.name ?? "")
                 })}
               />
             </FormField>
@@ -174,7 +278,15 @@ export function ProfileAdminForm(props: Props) {
               </div>
             )}
             <FormField label={kind === "store" ? "Foto toko" : "Logo usaha"} description="JPG, PNG, atau WEBP. Maksimal 5 MB.">
-              <FileUpload max={1} initialCount={edit ? 1 : 0} markPrimary={false} label={kind === "store" ? "Unggah foto" : "Unggah logo"} onCountChange={() => setDirty(true)} />
+              <FileUpload
+                purpose={kind === "store" ? "store_photo" : "umkm_logo"}
+                client={adminApi}
+                max={1}
+                initial={store?.photo ? [store.photo] : umkm?.logo ? [umkm.logo] : []}
+                onChange={setFileIds}
+                markPrimary={false}
+                label={kind === "store" ? "Unggah foto" : "Unggah logo"}
+              />
             </FormField>
           </div>
         </FormSectionCard>
@@ -187,7 +299,7 @@ export function ProfileAdminForm(props: Props) {
               </FormField>
             </div>
             <FormField label="Titik lokasi" required description="Geser pin ke lokasi yang tepat.">
-              <LocationPicker lat={store?.lat} lng={store?.lng} />
+              <LocationPicker lat={props.profile?.lat} lng={props.profile?.lng} onChange={setLoc} />
             </FormField>
           </div>
         </FormSectionCard>
@@ -231,7 +343,17 @@ export function ProfileAdminForm(props: Props) {
                 </FormField>
               ))}
               <FormField label="Dokumen legalitas" description="Foto atau PDF NIB, PIRT, sertifikat halal.">
-                <FileUpload variant="document" accept="image/*,application/pdf" max={6} initialCount={umkm?.legal_documents.length ?? 0} label="Unggah dokumen" markPrimary={false} onCountChange={() => setDirty(true)} />
+                <FileUpload
+                  purpose="legal_document"
+                  client={adminApi}
+                  variant="document"
+                  accept="image/jpeg,image/png,image/webp,application/pdf"
+                  max={5}
+                  initial={umkm?.legal_documents ?? []}
+                  onChange={setDocIds}
+                  label="Unggah dokumen"
+                  markPrimary={false}
+                />
               </FormField>
             </div>
           </FormSectionCard>
