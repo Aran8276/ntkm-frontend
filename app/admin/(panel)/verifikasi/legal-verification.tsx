@@ -27,7 +27,7 @@ import { DocumentViewer } from "@/components/admin/pickers"
 type Tab = "pending" | "verified" | "rejected"
 type Decision = "verify" | "reject" | "keep"
 
-const KINDS: { key: LegalKind; label: string; field: keyof AdminUmkm["legal"] }[] = [
+const KINDS: { key: LegalKind; label: string; field: "nib" | "pirt_number" | "halal_number" }[] = [
   { key: "nib", label: "NIB", field: "nib" },
   { key: "pirt", label: "PIRT", field: "pirt_number" },
   { key: "halal", label: "Halal", field: "halal_number" },

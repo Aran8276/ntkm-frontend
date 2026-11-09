@@ -51,7 +51,7 @@ export function OpportunitiesTable() {
           },
           { key: "category", label: "Kategori", options: categoryOptions, match: (o, v) => o.categories.some((c) => c.slug === v) },
         ]}
-        toggles={[{ key: "expired", label: "Sudah kedaluwarsa", match: (o) => o.expired }]}
+        toggles={[{ key: "expired", label: "Sudah kedaluwarsa", match: (o) => o.is_expired }]}
         exportResources={["opportunities"]}
         createAction={create}
         columns={[
@@ -88,7 +88,7 @@ export function OpportunitiesTable() {
             header: "Pengajuan baru",
             className: "text-right",
             cell: (o) => {
-              const n = o.application_counts.submitted ?? 0
+              const n = o.application_counts?.submitted ?? 0
               return n > 0 ? (
                 <span className="bg-primary px-1.5 py-0.5 text-xs font-semibold text-primary-foreground tabular-nums">{n}</span>
               ) : (

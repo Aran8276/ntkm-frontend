@@ -3,8 +3,9 @@
 import * as React from "react"
 import { IconShieldPlus } from "@tabler/icons-react"
 
-import { ADMIN_USERS, AUDIT_LOGS } from "@/lib/admin-mock"
-import type { AdminLevel, AdminUser } from "@/lib/admin-types"
+import { adminApi, type Paginated } from "@/lib/api"
+import { revalidate, useApi } from "@/lib/use-api"
+import type { AdminLevel, AdminUser, AuditLog } from "@/lib/admin-types"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -18,15 +19,23 @@ import { AdminAccessDenied } from "@/components/admin/admin-system"
 import { DataTable } from "@/components/admin/data-table"
 import { EntityPicker } from "@/components/admin/pickers"
 import { RiskyActionModal } from "@/components/admin/risky-action"
+import { useUsers } from "@/components/admin/options"
 
-const ADMINS = ADMIN_USERS.filter((u) => u.is_admin)
-const superadminCount = ADMINS.filter((u) => u.admin_role === "superadmin").length
+const refresh = () => revalidate("admin", "/admin/users", "/admin/audit-logs")
 
-const grantOf = (u: AdminUser) => AUDIT_LOGS.find((l) => l.action === "grant_admin" && l.target_id === u.id)
-
-/** A24 · Admin & akses (superadmin only). */
+/** A24 · Admin & akses (superadmin only): `GET /admin/users?is_admin=true` + `PATCH /admin/users/{id}`. */
 export function AdminAccess() {
   const { isSuperadmin, me } = useAdmin()
+  const adminsQ = useApi<Paginated<AdminUser>>("admin", isSuperadmin ? "/admin/users" : null, { is_admin: true, page_size: 100 })
+  const grantsQ = useApi<Paginated<AuditLog>>("admin", isSuperadmin ? "/admin/audit-logs" : null, {
+    action: "grant_admin",
+    target_type: "user",
+    page_size: 100,
+  })
+  const allUsers = useUsers(undefined, isSuperadmin)
+  const superadminCount = (adminsQ.data?.results ?? []).filter((u) => u.admin_role === "superadmin").length
+  // Newest grant per user (the list is newest first).
+  const grantOf = (u: AdminUser) => grantsQ.data?.results.find((l) => l.target_id === u.id)
   const [grant, setGrant] = React.useState(false)
   const [level, setLevel] = React.useState<{ user: AdminUser; value: AdminLevel } | null>(null)
   const [revoke, setRevoke] = React.useState<AdminUser | null>(null)
@@ -36,7 +45,7 @@ export function AdminAccess() {
   if (!isSuperadmin) return <AdminAccessDenied />
 
   const lastSuper = (u: AdminUser) => u.admin_role === "superadmin" && superadminCount <= 1
-  const candidates = ADMIN_USERS.filter((u) => !u.deleted_at).map((u) => ({
+  const candidates = allUsers.filter((u) => !u.deleted_at).map((u) => ({
     value: u.id,
     label: u.name,
     description: u.email,
@@ -80,7 +89,8 @@ export function AdminAccess() {
       }
     >
       <DataTable<AdminUser>
-        rows={ADMINS}
+        endpoint="/admin/users"
+        baseQuery={{ is_admin: true }}
         rowKey={(u) => u.id}
         rowHref={(u) => `/admin/pengguna/${u.id}`}
         defaultOrdering="name"
@@ -88,7 +98,7 @@ export function AdminAccess() {
           {
             key: "name",
             header: "Nama",
-            sort: (u) => u.name,
+            sort: true,
             cell: (u) => (
               <span className="flex items-center gap-3">
                 <Avatar name={u.name} size="sm" />
@@ -99,7 +109,7 @@ export function AdminAccess() {
           },
           { key: "email", header: "Email", cell: (u) => <span className="text-muted-foreground">{u.email}</span> },
           { key: "level", header: "Level", cell: (u) => <AdminLevelChip level={u.admin_role!} /> },
-          { key: "last_login_at", header: "Login terakhir", sort: (u) => u.last_login_at, cell: (u) => <DateTime value={u.last_login_at} /> },
+          { key: "last_login_at", header: "Login terakhir", sort: true, cell: (u) => <DateTime value={u.last_login_at} /> },
           {
             key: "granted",
             header: "Diangkat oleh",
@@ -135,7 +145,11 @@ export function AdminAccess() {
         title="Angkat admin"
         confirmLabel="Angkat admin"
         canConfirm={!!pick}
-        onConfirm={() => toast.add({ title: `${ADMIN_USERS.find((u) => u.id === pick)?.name ?? "Akun"} sekarang admin.`, type: "success" })}
+        onConfirm={async ({ reason }) => {
+          const res = await adminApi.patch<AdminUser>(`/admin/users/${pick}`, { is_admin: true, admin_role: newLevel, admin_reason: reason })
+          toast.add({ title: `${res.name || allUsers.find((u) => u.id === pick)?.name || "Akun"} sekarang admin.`, type: "success" })
+          void refresh()
+        }}
       >
         <FormField label="Akun" required>
           <EntityPicker options={candidates} value={pick} onChange={setPick} placeholder="Cari nama atau email…" />
@@ -149,7 +163,12 @@ export function AdminAccess() {
         title={`Ubah level ${level?.user.name ?? ""}?`}
         confirmLabel="Simpan level"
         canConfirm={!!level && level.value !== level.user.admin_role}
-        onConfirm={() => toast.add({ title: "Level admin diubah.", type: "success" })}
+        onConfirm={async ({ reason }) => {
+          if (!level) return
+          await adminApi.patch(`/admin/users/${level.user.id}`, { admin_role: level.value, admin_reason: reason })
+          toast.add({ title: "Level admin diubah.", type: "success" })
+          void refresh()
+        }}
       >
         {level && <LevelRadio value={level.value} onChange={(v) => setLevel({ ...level, value: v })} />}
       </RiskyActionModal>
@@ -161,7 +180,12 @@ export function AdminAccess() {
         impacts={["Akun ini langsung kehilangan akses panel admin"]}
         destructive
         confirmLabel="Cabut akses"
-        onConfirm={() => toast.add({ title: "Akses admin dicabut.", type: "success" })}
+        onConfirm={async ({ reason }) => {
+          if (!revoke) return
+          await adminApi.patch(`/admin/users/${revoke.id}`, { is_admin: false, admin_role: null, admin_reason: reason })
+          toast.add({ title: "Akses admin dicabut.", type: "success" })
+          void refresh()
+        }}
       />
     </AdminPage>
   )

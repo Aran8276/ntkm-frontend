@@ -4,13 +4,16 @@ import * as React from "react"
 import { IconChevronDown, IconDownload, IconInfoCircle } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
+import { adminApi, isApiError } from "@/lib/api"
+import { addDaysIso, todayIso } from "@/lib/format"
+import { handleApiError } from "@/components/app/feedback"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 import { AdminPage } from "@/components/admin/admin-page"
-import { categoryOptions, storeOptions, umkmOptions } from "@/components/admin/options"
+import { useCategoryOptions, useStoreOptions, useUmkmOptions } from "@/components/admin/options"
 
 type FilterKind = "role" | "user_status" | "legal_status" | "opp_status" | "app_status" | "store" | "umkm" | "category" | "active" | "stock_status" | "date_range"
 
@@ -43,7 +46,23 @@ const EXPORTS: ExportDef[] = [
   { resource: "stock", title: "Stok", description: "Item berstatus diterima toko.", columns: ["application_id", "store_name", "umkm_name", "product_name", "sell_price", "stock_mode", "stock_quantity", "stock_status", "stock_updated_at"], filters: ["store", "umkm", "stock_status"] },
 ]
 
-const SELECTS: Partial<Record<FilterKind, { label: string; options: { value: string; label: string }[] }>> = {
+type SelectDef = { label: string; options: { value: string; label: string }[] }
+
+/** API param per filter (the export endpoints take the same params as the list endpoints). */
+const PARAM: Partial<Record<FilterKind, string>> = {
+  role: "role",
+  legal_status: "legal_status",
+  opp_status: "status",
+  app_status: "status",
+  store: "store_id",
+  umkm: "umkm_id",
+  category: "category",
+  active: "is_active",
+  stock_status: "stock_status",
+}
+const paramOf = (f: FilterKind, resource: string) => (f === "user_status" ? (resource === "users" ? "status" : "user_status") : PARAM[f]!)
+
+const SELECTS: Partial<Record<FilterKind, SelectDef>> = {
   role: { label: "Peran", options: [{ value: "store", label: "Toko" }, { value: "umkm", label: "UMKM" }, { value: "none", label: "Tanpa peran" }] },
   user_status: { label: "Status akun", options: [{ value: "invited", label: "Diundang" }, { value: "active", label: "Aktif" }, { value: "suspended", label: "Disuspend" }] },
   legal_status: { label: "Status legalitas", options: [{ value: "pending", label: "Menunggu" }, { value: "verified", label: "Terverifikasi" }, { value: "rejected", label: "Ditolak" }, { value: "unverified", label: "Belum diisi" }] },
@@ -60,41 +79,57 @@ const SELECTS: Partial<Record<FilterKind, { label: string; options: { value: str
       { value: "cancelled", label: "Dibatalkan" },
     ],
   },
-  store: { label: "Toko", options: storeOptions.map((o) => ({ value: o.value, label: o.label })) },
-  umkm: { label: "UMKM", options: umkmOptions.map((o) => ({ value: o.value, label: o.label })) },
-  category: { label: "Kategori", options: categoryOptions },
   active: { label: "Aktif", options: [{ value: "true", label: "Aktif" }, { value: "false", label: "Diarsipkan" }] },
   stock_status: { label: "Status stok", options: [{ value: "available", label: "Ada" }, { value: "out_of_stock", label: "Habis" }] },
 }
 
-/** A23 · Ekspor. */
+/** A23 · Ekspor: `GET /admin/exports/{resource}.csv?<filter>`. */
 export function ExportCards() {
+  const stores = useStoreOptions()
+  const umkms = useUmkmOptions()
+  const categories = useCategoryOptions()
+  const selects: Partial<Record<FilterKind, SelectDef>> = {
+    ...SELECTS,
+    store: { label: "Toko", options: stores.map((o) => ({ value: o.value, label: o.label })) },
+    umkm: { label: "UMKM", options: umkms.map((o) => ({ value: o.value, label: o.label })) },
+    category: { label: "Kategori", options: categories },
+  }
   return (
     <AdminPage title="Ekspor" description="Unduh data pilot sebagai CSV. Setiap unduhan tercatat di audit log.">
       <div className="grid gap-6 lg:grid-cols-2">
         {EXPORTS.map((e) => (
-          <ExportCard key={e.resource} def={e} />
+          <ExportCard key={e.resource} def={e} selects={selects} />
         ))}
       </div>
     </AdminPage>
   )
 }
 
-function ExportCard({ def }: { def: ExportDef }) {
+function ExportCard({ def, selects }: { def: ExportDef; selects: Partial<Record<FilterKind, SelectDef>> }) {
   const [showCols, setShowCols] = React.useState(false)
   const [values, setValues] = React.useState<Record<string, string>>({})
   const [busy, setBusy] = React.useState(false)
-  const [from, setFrom] = React.useState("2026-09-01")
-  const [to, setTo] = React.useState("2026-11-04")
+  const [from, setFrom] = React.useState(() => addDaysIso(-60))
+  const [to, setTo] = React.useState(() => todayIso())
 
-  const download = () => {
+  const download = async () => {
     setBusy(true)
-    setTimeout(() => {
+    const query: Record<string, string | undefined> = {}
+    for (const f of def.filters) {
+      if (f === "date_range") {
+        query.created_after = from || undefined
+        query.created_before = to || undefined
+      } else if (values[f]) query[paramOf(f, def.resource)] = values[f]
+    }
+    try {
+      await adminApi.download(`/admin/exports/${def.resource}.csv`, query, `${def.resource}.csv`)
+      toast.add({ title: `${def.resource}.csv diunduh.`, type: "success" })
+    } catch (e) {
+      if (isApiError(e) && e.status === 400) toast.add({ title: "Data terlalu banyak. Persempit rentang tanggal atau filter.", type: "error" })
+      else handleApiError(e, { admin: true })
+    } finally {
       setBusy(false)
-      // 400 when > 50.000 rows: only reachable with very wide ranges in this mock.
-      if (from < "2020-01-01") toast.add({ title: "Data terlalu banyak. Persempit rentang tanggal atau filter.", type: "error" })
-      else toast.add({ title: `${def.resource}.csv diunduh.`, type: "success" })
-    }, 900)
+    }
   }
 
   return (
@@ -123,10 +158,10 @@ function ExportCard({ def }: { def: ExportDef }) {
             </div>
           ) : (
             <label key={f} className="flex flex-col gap-1.5">
-              <span className="text-[0.6875rem] font-semibold tracking-widest text-muted-foreground uppercase">{SELECTS[f]!.label}</span>
+              <span className="text-[0.6875rem] font-semibold tracking-widest text-muted-foreground uppercase">{selects[f]!.label}</span>
               <NativeSelect value={values[f] ?? ""} onChange={(e) => setValues((v) => ({ ...v, [f]: e.target.value }))}>
                 <NativeSelectOption value="">Semua</NativeSelectOption>
-                {SELECTS[f]!.options.map((o) => (
+                {selects[f]!.options.map((o) => (
                   <NativeSelectOption key={o.value} value={o.value}>
                     {o.label}
                   </NativeSelectOption>
@@ -154,7 +189,7 @@ function ExportCard({ def }: { def: ExportDef }) {
             {def.columns.length} kolom
             <IconChevronDown className={cn("size-3.5 transition-transform", showCols && "rotate-180")} />
           </button>
-          <Button onClick={download} disabled={busy}>
+          <Button onClick={() => void download()} disabled={busy}>
             {busy ? <Spinner data-icon="inline-start" /> : <IconDownload data-icon="inline-start" />}
             Unduh CSV
           </Button>

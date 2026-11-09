@@ -1,8 +1,10 @@
 "use client"
 
+import * as React from "react"
 import Link from "next/link"
 
-import { AUDIT_LOGS, NOW_ISO } from "@/lib/admin-mock"
+import { addDaysIso } from "@/lib/format"
+import { useApi } from "@/lib/use-api"
 import type { AuditAction, AuditLog, TargetType } from "@/lib/admin-types"
 import { useUrlParams } from "@/hooks/use-url-params"
 import { AdminPage } from "@/components/admin/admin-page"
@@ -17,71 +19,89 @@ import {
 } from "@/components/admin/admin-ui"
 import { DataTable } from "@/components/admin/data-table"
 import { SidePanel } from "@/components/admin/pickers"
-import { adminOptions } from "@/components/admin/options"
+import { useAdminOptions } from "@/components/admin/options"
 
-const daysAgo = (n: number) => new Date(new Date(NOW_ISO).getTime() - n * 86_400_000).toISOString()
-const targets = [...new Map(AUDIT_LOGS.map((l) => [l.target_id, l.target_label])).entries()]
+const TARGET_PATH: Partial<Record<TargetType, string>> = {
+  user: "/admin/pengguna/",
+  store: "/admin/toko/",
+  umkm: "/admin/umkm/",
+  opportunity: "/admin/peluang/",
+  product: "/admin/produk/",
+  application: "/admin/pengajuan/",
+}
 
-/** A22 · Audit log (read-only). */
+const targetHref = (l: AuditLog) => {
+  if (l.target_type === "category") return "/admin/kategori"
+  if (l.target_type === "file") return `/admin/file?id=${l.target_id}`
+  if (l.target_type === "notification") return `/admin/notifikasi?id=${l.target_id}`
+  const base = TARGET_PATH[l.target_type]
+  return base ? `${base}${l.target_id}` : null
+}
+
+/** A22 · Audit log (read-only): `GET /admin/audit-logs`, side panel `GET /admin/audit-logs/{id}`. */
 export function AuditLogTable() {
   const { get, set } = useUrlParams()
-  const selected = AUDIT_LOGS.find((l) => l.id === get("id"))
+  const adminOptions = useAdminOptions()
+  const [now] = React.useState(() => new Date())
+  const daysAgo = (n: number) => addDaysIso(-n, now)
+  const selectedId = get("id")
+  const selectedQ = useApi<AuditLog>("admin", selectedId ? `/admin/audit-logs/${selectedId}` : null)
+  const selected = selectedQ.data?.id === selectedId ? selectedQ.data : undefined
+  const targetId = get("target_id")
 
   return (
     <AdminPage title="Audit log" description="Semua tindakan admin. Hanya-baca; audit log belum bisa diekspor.">
       <DataTable<AuditLog>
-        rows={AUDIT_LOGS}
+        endpoint="/admin/audit-logs"
         rowKey={(l) => l.id}
         onRowClick={(l) => set({ id: l.id })}
         filters={[
-          { key: "admin_id", label: "Admin", searchable: true, options: adminOptions, match: (l, v) => l.admin.id === v },
+          { key: "admin_id", label: "Admin", searchable: true, options: adminOptions },
           {
             key: "action",
             label: "Aksi",
             options: (Object.keys(AUDIT_ACTION_LABEL) as AuditAction[]).map((a) => ({ value: a, label: AUDIT_ACTION_LABEL[a] })),
-            match: (l, v) => l.action === v,
           },
           {
             key: "target_type",
             label: "Jenis objek",
             options: (Object.keys(TARGET_LABEL) as TargetType[]).map((t) => ({ value: t, label: TARGET_LABEL[t] })),
-            match: (l, v) => l.target_type === v,
           },
           {
             key: "target_id",
             label: "ID objek",
             searchable: true,
-            options: targets.map(([id, label]) => ({ value: id, label, description: id.slice(0, 8) })),
-            match: (l, v) => l.target_id === v,
+            options: targetId ? [{ value: targetId, label: targetId.slice(0, 8) }] : [],
           },
           {
             key: "created_after",
             label: "Rentang tanggal",
             options: [
-              { value: "1", label: "24 jam terakhir" },
-              { value: "7", label: "7 hari terakhir" },
-              { value: "30", label: "30 hari terakhir" },
-              { value: "90", label: "90 hari terakhir" },
+              { value: daysAgo(1), label: "24 jam terakhir" },
+              { value: daysAgo(7), label: "7 hari terakhir" },
+              { value: daysAgo(30), label: "30 hari terakhir" },
+              { value: daysAgo(90), label: "90 hari terakhir" },
             ],
-            match: (l, v) => l.created_at >= daysAgo(Number(v)),
           },
         ]}
         columns={[
-          { key: "created_at", header: "Waktu", sort: (l) => l.created_at, cell: (l) => <DateTime value={l.created_at} /> },
+          { key: "created_at", header: "Waktu", sort: true, cell: (l) => <DateTime value={l.created_at} /> },
           { key: "admin", header: "Admin", cell: (l) => l.admin.name },
           { key: "action", header: "Aksi", cell: (l) => <span className="font-medium">{AUDIT_ACTION_LABEL[l.action]}</span> },
-          { key: "type", header: "Jenis objek", cell: (l) => TARGET_LABEL[l.target_type] },
+          { key: "type", header: "Jenis objek", cell: (l) => TARGET_LABEL[l.target_type] ?? l.target_type },
           {
             key: "target",
             header: "Objek",
-            cell: (l) =>
-              l.target_href ? (
-                <CellLink href={l.target_href} className="block max-w-56 truncate">
+            cell: (l) => {
+              const href = targetHref(l)
+              return href ? (
+                <CellLink href={href} className="block max-w-56 truncate">
                   {l.target_label}
                 </CellLink>
               ) : (
                 <span className="block max-w-56 truncate">{l.target_label}</span>
-              ),
+              )
+            },
           },
           { key: "reason", header: "Alasan", cell: (l) => <span className="block max-w-72 truncate text-muted-foreground">{l.reason || "—"}</span> },
         ]}
@@ -100,18 +120,20 @@ export function AuditLogTable() {
               items={[
                 {
                   label: "Admin",
-                  value: (
+                  value: selected.admin.id ? (
                     <Link href={`/admin/pengguna/${selected.admin.id}`} className="text-primary hover:underline">
                       {selected.admin.name}
                     </Link>
+                  ) : (
+                    selected.admin.name
                   ),
                 },
                 { label: "Waktu", value: <DateTime value={selected.created_at} /> },
                 { label: "Aksi", value: AUDIT_ACTION_LABEL[selected.action] },
                 {
                   label: "Objek",
-                  value: selected.target_href ? (
-                    <Link href={selected.target_href} className="text-primary hover:underline">
+                  value: targetHref(selected) ? (
+                    <Link href={targetHref(selected)!} className="text-primary hover:underline">
                       {selected.target_label}
                     </Link>
                   ) : (
@@ -150,8 +172,8 @@ export function AuditLogTable() {
             <DataList
               columns={1}
               items={[
-                { label: "IP address", value: <code className="font-mono text-xs">{selected.ip_address}</code> },
-                { label: "User agent", value: <code className="font-mono text-xs text-muted-foreground">{selected.user_agent}</code> },
+                { label: "IP address", value: <code className="font-mono text-xs">{selected.ip_address ?? "—"}</code> },
+                { label: "User agent", value: <code className="font-mono text-xs text-muted-foreground">{selected.user_agent ?? "—"}</code> },
               ]}
             />
           </>
