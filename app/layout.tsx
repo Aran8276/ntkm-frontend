@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Figtree } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,27 @@ export const metadata: Metadata = {
   },
   description:
     "Toko membuka peluang, UMKM mengajukan produk. Jadwal antar, status kerja sama, sampai kabar stok habis tercatat rapi di satu aplikasi.",
+  applicationName: "Rak Lokal",
+  appleWebApp: { capable: true, title: "Rak Lokal", statusBarStyle: "default" },
+  formatDetection: { telephone: false },
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icons/icon.svg", type: "image/svg+xml" },
+      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+    ],
+    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180" }],
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#007595" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0f12" },
+  ],
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

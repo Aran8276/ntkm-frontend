@@ -160,8 +160,8 @@ export function AppShell({
     <div className="flex min-h-svh flex-1 flex-col overflow-x-clip bg-muted">
       {!hideNav && <Sidebar role={role} pathname={pathname} />}
 
-      <div className={cn("flex min-w-0 flex-1 flex-col", !hideNav && "lg:pl-64")}>
-        <header className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/80">
+      <div className={cn("flex min-w-0 flex-1 flex-col", !hideNav && "lg:pl-64 print:pl-0")}>
+        <header className="sticky top-0 z-30 border-b bg-background/95 print:hidden backdrop-blur supports-backdrop-filter:bg-background/80">
           <div
             className={cn(
               "mx-auto flex h-16 w-full items-center gap-3 px-4 lg:px-8",
@@ -207,7 +207,7 @@ export function AppShell({
       {ready && bottomBar && (
         <div
           className={cn(
-            "fixed inset-x-0 z-30 border-t bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/85",
+            "fixed inset-x-0 z-30 border-t bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/85 print:hidden",
             hideNav ? "bottom-0" : "bottom-16 lg:bottom-0 lg:left-64"
           )}
         >
@@ -242,7 +242,7 @@ function Sidebar({ role, pathname }: { role: Role; pathname: string }) {
   const { me } = useSession()
   const main = NAV[role].slice(0, 4)
   return (
-    <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r bg-background lg:flex">
+    <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r bg-background lg:flex print:hidden">
       <div className="flex h-16 items-center border-b px-6">
         <Logo href={ROLE_HOME[role]} />
       </div>
@@ -309,7 +309,7 @@ function BottomNav({ role, pathname }: { role: Role; pathname: string }) {
   return (
     <nav
       aria-label="Navigasi utama"
-      className="fixed inset-x-0 bottom-0 z-40 border-t bg-background pb-[env(safe-area-inset-bottom)] lg:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 border-t bg-background pb-[env(safe-area-inset-bottom)] lg:hidden print:hidden"
     >
       <ul className="mx-auto grid h-16 max-w-lg grid-cols-5">
         {NAV[role].map((item) => {

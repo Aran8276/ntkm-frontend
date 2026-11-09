@@ -4,8 +4,22 @@
     {
       "name": "next-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 3000
+    },
+    {
+      "name": "next-prod",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "next",
+        "start",
+        "-p",
+        "3100"
+      ],
+      "port": 3100
     },
     {
       "name": "existing-dev",
@@ -15,7 +29,12 @@
     {
       "name": "backend",
       "runtimeExecutable": "backend/.venv/Scripts/python.exe",
-      "runtimeArgs": ["backend/manage.py", "runserver", "127.0.0.1:8000", "--noreload"],
+      "runtimeArgs": [
+        "backend/manage.py",
+        "runserver",
+        "127.0.0.1:8000",
+        "--noreload"
+      ],
       "port": 8000,
       "url": "http://127.0.0.1:8000"
     }
