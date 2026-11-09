@@ -44,6 +44,8 @@ import {
   StatusChip,
   StockChip,
 } from "@/components/app/status"
+import { SettlementCard, SettlementTotals, useSettlement } from "@/components/app/settlement"
+import { hasSettlement, settlementSummary } from "@/lib/settlement"
 import { ReviewForm, type ReviewResult } from "./review-form"
 
 const BANNER: Record<ApplicationStatus, Record<Role, (a: Application) => string>> = {
@@ -133,6 +135,10 @@ function DetailView({
   const [sheet, setSheet] = React.useState<ActionSheet>(null)
   const [pending, setPending] = React.useState(false)
   const [completeNote, setCompleteNote] = React.useState("")
+  const { settlement } = useSettlement(app)
+  // The API caps notes at 300 characters; the recap line takes part of it.
+  const recapLine = settlementSummary(settlement, formatRupiah)
+  const noteRoom = Math.max(0, 300 - recapLine.length - 1)
 
   const actions = app.available_actions
   const reviewing = viewer === "store" && actions.includes("review")
@@ -306,6 +312,9 @@ function DetailView({
               )}
             </Section>
           )}
+
+          {/* Sales recap: units sold and each party's share (received / completed). */}
+          {!reviewing && hasSettlement(app) && <SettlementCard app={app} />}
         </div>
 
         <div className="flex flex-col gap-6">
@@ -364,7 +373,7 @@ function DetailView({
                         oleh {e.actor.name}
                         {e.actor.role ? ` (${ACTOR_LABEL[e.actor.role] ?? e.actor.role})` : ""} · {formatRelative(e.created_at)}
                       </p>
-                      {e.note && <p className="text-sm text-foreground/80 italic">{e.note}</p>}
+                      {e.note && <p className="text-sm whitespace-pre-line text-foreground/80 italic">{e.note}</p>}
                     </div>
                   </li>
                 )
@@ -404,14 +413,22 @@ function DetailView({
         open={sheet === "complete"}
         onOpenChange={(o) => !o && setSheet(null)}
         title="Selesaikan kerja sama ini?"
-        description="Stok tidak bisa diubah lagi."
+        description="Stok tidak bisa diubah lagi. Rekap di bawah menjadi dasar tagihan dan ikut tersimpan di timeline."
         confirmLabel="Ya, selesaikan"
-        onConfirm={() => void run("complete", { note: completeNote }, "Kerja sama diselesaikan.")}
+        onConfirm={() =>
+          void run(
+            "complete",
+            { note: [completeNote.trim().slice(0, noteRoom), recapLine].filter(Boolean).join("\n").slice(0, 300) },
+            "Kerja sama diselesaikan."
+          )
+        }
       >
+        <SettlementTotals s={settlement} viewer={viewer} compact />
         <FormField label="Catatan (opsional)" htmlFor="complete-note">
           <Textarea
             id="complete-note"
             value={completeNote}
+            maxLength={noteRoom}
             onChange={(e) => setCompleteNote(e.target.value)}
             placeholder="Mis. sisa barang sudah diambil."
           />
