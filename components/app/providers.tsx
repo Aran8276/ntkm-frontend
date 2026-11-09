@@ -5,6 +5,7 @@ import * as React from "react"
 import { Toaster } from "@/components/ui/toast"
 import { ConflictDialogHost } from "@/components/app/feedback"
 import { ServiceWorker } from "@/components/app/service-worker"
+import { NoZoom } from "@/components/app/no-zoom"
 import { api, clearTokens, getTokens } from "@/lib/api"
 import { clearCache, useApi, useSessionPresent, type UseApiResult } from "@/lib/use-api"
 import type { Me, Role } from "@/lib/types"
@@ -91,6 +92,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         {children}
         <ConflictDialogHost />
         <ServiceWorker />
+        <NoZoom />
       </Toaster>
     </SessionContext.Provider>
   )

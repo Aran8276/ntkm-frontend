@@ -134,6 +134,8 @@
     @apply bg-background text-foreground;
   }
   html {
+    /* No double-tap zoom on mobile. */
+    touch-action: manipulation;
     @apply font-sans;
   }
 }
