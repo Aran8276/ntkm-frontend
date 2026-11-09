@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils"
 import { formatCommission, formatDate, formatDistance, formatRupiah } from "@/lib/format"
 import { api, isApiError } from "@/lib/api"
 import { revalidate, useApi } from "@/lib/use-api"
-import type { Application, FeedOpportunityDetail } from "@/lib/types"
+import type { Application, ApplicationStatus, FeedOpportunityDetail } from "@/lib/types"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
@@ -38,6 +38,15 @@ import {
   RequirementList,
   ScheduleList,
 } from "@/components/app/opportunity-details"
+
+/** Statuses that count as "already applied" (mirrors ACTIVE_APPLICATION_STATUSES in the API). */
+const ACTIVE_STATUSES: ApplicationStatus[] = ["submitted", "approved", "in_delivery", "received"]
+
+const PREVIOUS_TITLE: Partial<Record<ApplicationStatus, string>> = {
+  rejected: "Pengajuan sebelumnya ditolak",
+  cancelled: "Pengajuan sebelumnya dibatalkan",
+  completed: "Kerja sama sebelumnya selesai",
+}
 
 /** P16 · Detail peluang + ajukan. */
 export function OpportunityApply({ id }: { id: string }) {
@@ -74,7 +83,11 @@ function ApplyView({ o, reload }: { o: FeedOpportunityDetail; reload: () => Prom
 
   const max = o.max_products_per_umkm
   const unavailable = gone || !o.is_available || o.quota_remaining === 0 || o.status !== "open"
-  const applied = !!o.my_application
+  // Only an active application blocks a new one (the API's rule). After a
+  // rejected, cancelled or completed application the UMKM may apply again,
+  // e.g. with different products.
+  const previous = o.my_application ?? null
+  const applied = !!previous && ACTIVE_STATUSES.includes(previous.status)
   const legalMissing = !!legalError
 
   const toggle = (pid: string, checked: boolean) =>
@@ -94,7 +107,11 @@ function ApplyView({ o, reload }: { o: FeedOpportunityDetail; reload: () => Prom
         setLegalError(e.field("legal")!)
         return
       }
-      if (isApiError(e) && (e.code === "not_found" || e.code === "conflict")) setGone(true)
+      // 409 already_applied: another active application exists → reload shows it.
+      if (isApiError(e) && e.code === "conflict" && e.details?.reason === "already_applied") {
+        void reload()
+        void revalidate("user", "/opportunities", "/applications")
+      } else if (isApiError(e) && (e.code === "not_found" || e.code === "conflict")) setGone(true)
       handleApiError(e, { onReload: reload })
     }
   }
@@ -197,14 +214,29 @@ function ApplyView({ o, reload }: { o: FeedOpportunityDetail; reload: () => Prom
           {applied ? (
             <Section title="Anda sudah mengajukan">
               <div className="flex flex-col gap-4">
-                <ApplicationStatusChip status={o.my_application!.status} />
-                <Link href={`/kerja-sama/${o.my_application!.id}`} className={cn(buttonVariants({ variant: "outline" }), "self-start")}>
+                <ApplicationStatusChip status={previous!.status} />
+                <Link href={`/kerja-sama/${previous!.id}`} className={cn(buttonVariants({ variant: "outline" }), "self-start")}>
                   Lihat pengajuan
                 </Link>
               </div>
             </Section>
           ) : (
             <>
+              {previous && (
+                <Alert>
+                  <IconAlertTriangle />
+                  <AlertDescription className="flex flex-col gap-2">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-foreground">{PREVIOUS_TITLE[previous.status] ?? "Pengajuan sebelumnya"}</span>
+                      <ApplicationStatusChip status={previous.status} />
+                    </span>
+                    <span>Anda bisa mengajukan lagi, misalnya dengan produk lain.</span>
+                    <Link href={`/kerja-sama/${previous.id}`} className="self-start text-primary hover:underline">
+                      Lihat pengajuan sebelumnya
+                    </Link>
+                  </AlertDescription>
+                </Alert>
+              )}
               <Section
                 title="Pilih produk"
                 action={

@@ -137,7 +137,11 @@ export function OpportunityCard({
 
       {side === "umkm" && o.my_application && (
         <div className="-mx-5 -mb-5 flex items-center justify-between gap-3 border-t bg-muted/50 px-5 py-3">
-          <span className="text-xs font-semibold tracking-widest uppercase">Sudah diajukan</span>
+          <span className="text-xs font-semibold tracking-widest uppercase">
+            {["submitted", "approved", "in_delivery", "received"].includes(o.my_application.status)
+              ? "Sudah diajukan"
+              : "Bisa diajukan lagi"}
+          </span>
           <ApplicationStatusChip status={o.my_application.status} />
         </div>
       )}
