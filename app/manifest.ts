@@ -4,8 +4,8 @@ import type { MetadataRoute } from "next"
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
-    name: "Rak Lokal — UMKM × Toko Ritel",
-    short_name: "Rak Lokal",
+    name: "NTKM — Solusi laris bagi peluang manis",
+    short_name: "NTKM",
     description:
       "Toko membuka peluang, UMKM mengajukan produk. Jadwal antar, status kerja sama, sampai kabar stok habis tercatat rapi di satu aplikasi.",
     lang: "id",

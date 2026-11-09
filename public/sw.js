@@ -1,4 +1,4 @@
-/* Rak Lokal service worker.
+/* NTKM service worker.
  *
  * - App pages: network first; when offline, the cached copy of the page or
  *   the /offline page.
@@ -9,7 +9,7 @@
  *
  * Bump VERSION to drop old caches.
  */
-const VERSION = "v3"
+const VERSION = "v4"
 const PAGES = `pages-${VERSION}`
 const ASSETS = `assets-${VERSION}`
 const OFFLINE_URL = "/offline"

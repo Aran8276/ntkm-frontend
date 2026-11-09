@@ -2,7 +2,8 @@ import Link from "next/link"
 
 import { cn } from "@/lib/utils"
 
-export const APP_NAME = "Rak Lokal"
+export const APP_NAME = "NTKM"
+export const APP_SLOGAN = "Solusi laris bagi peluang manis"
 
 export function Logo({ className, href = "/" }: { className?: string; href?: string | null }) {
   const content = (

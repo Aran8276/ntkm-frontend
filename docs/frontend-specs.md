@@ -1,4 +1,4 @@
-# Spesifikasi Halaman & Konten — Platform UMKM × Toko Ritel
+# Spesifikasi Halaman & Konten — NTKM
 
 Dokumen ini memetakan setiap halaman PWA, isi tiap section, dan endpoint yang dipanggil, mengikuti Spesifikasi API & Konten Landing Page.
 

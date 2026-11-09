@@ -1,4 +1,4 @@
-# Spesifikasi Halaman Admin Panel — Platform UMKM × Toko Ritel
+# Spesifikasi Halaman Admin Panel — NTKM
 
 Nov 4, 2026 · @Aran aran
 

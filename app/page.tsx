@@ -14,7 +14,7 @@ import {
 } from "@tabler/icons-react";
 import Link from "next/link";
 
-import { APP_NAME, Logo } from "@/components/app/logo";
+import { APP_NAME, APP_SLOGAN, Logo } from "@/components/app/logo";
 import {
   FaqAccordion,
   HowItWorks,
@@ -270,7 +270,7 @@ export default function LandingPage() {
           <div className="mx-auto grid max-w-6xl items-center gap-14 px-4 py-16 lg:grid-cols-[1.2fr_1fr] lg:px-8 lg:py-24">
             <div className="flex flex-col md:gap-8 gap-5">
               <p className="text-[16px] font-semibold tracking-[0.2em] text-primary uppercase">
-                Platform Ritel & UMKM
+                {APP_SLOGAN}
               </p>
               <h1 className="text-3xl leading-[1.15] font-semibold tracking-wide uppercase sm:text-5xl">
                 Produk UMKM ke rak toko terdekat
@@ -499,6 +499,7 @@ export default function LandingPage() {
         <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:grid-cols-2 lg:grid-cols-4 lg:px-8">
           <div className="flex flex-col gap-4">
             <Logo />
+            <p className="text-sm font-medium">{APP_SLOGAN}.</p>
             <p className="text-sm text-muted-foreground">
               Menghubungkan UMKM lokal dengan rak toko ritel terdekat.
             </p>
@@ -510,8 +511,8 @@ export default function LandingPage() {
             >
               WhatsApp admin
             </FooterLink>
-            <FooterLink href="mailto:halo@raklokal.id" icon={IconMail}>
-              halo@raklokal.id
+            <FooterLink href="mailto:halo@ntkm.id" icon={IconMail}>
+              halo@ntkm.id
             </FooterLink>
           </FooterCol>
           <FooterCol title="Legal">

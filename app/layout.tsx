@@ -18,13 +18,13 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Rak Lokal — UMKM × Toko Ritel",
-    template: "%s · Rak Lokal",
+    default: "NTKM — Solusi laris bagi peluang manis",
+    template: "%s · NTKM",
   },
   description:
     "Toko membuka peluang, UMKM mengajukan produk. Jadwal antar, status kerja sama, sampai kabar stok habis tercatat rapi di satu aplikasi.",
-  applicationName: "Rak Lokal",
-  appleWebApp: { capable: true, title: "Rak Lokal", statusBarStyle: "default" },
+  applicationName: "NTKM",
+  appleWebApp: { capable: true, title: "NTKM", statusBarStyle: "default" },
   formatDetection: { telephone: false },
   icons: {
     icon: [
@@ -43,6 +43,9 @@ export const viewport: Viewport = {
   ],
   width: "device-width",
   initialScale: 1,
+  // No pinch or double-tap zoom on mobile (app-like feel; also stops iOS zooming into inputs).
+  maximumScale: 1,
+  userScalable: false,
   viewportFit: "cover",
 };
 
