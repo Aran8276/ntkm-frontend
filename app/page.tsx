@@ -1,6 +1,7 @@
 import {
   IconAdjustmentsCheck,
   IconBellRinging,
+  IconBrandInstagram,
   IconBrandWhatsapp,
   IconCalendarTime,
   IconChecks,
@@ -20,7 +21,7 @@ import {
 } from "@/components/landing/landing-client";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { WHATSAPP_NUMBER, WHATSAPP_URL } from "@/lib/contact";
+import { INSTAGRAM_URL, WHATSAPP_NUMBER, WHATSAPP_URL } from "@/lib/contact";
 
 function CtaButtons({ placement }: { placement: string }) {
   return (
@@ -448,6 +449,9 @@ export default function LandingPage() {
           <FooterCol title="Kontak">
             <FooterLink href={WHATSAPP_URL} icon={IconBrandWhatsapp}>
               WhatsApp {WHATSAPP_NUMBER}
+            </FooterLink>
+            <FooterLink href={INSTAGRAM_URL} icon={IconBrandInstagram}>
+              Instagram @project.ntkm
             </FooterLink>
           </FooterCol>
           <FooterCol title="Legal">
