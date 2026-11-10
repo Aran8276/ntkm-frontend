@@ -3,10 +3,8 @@
 import * as React from "react"
 import {
   IconCopy,
-  IconCurrentLocation,
   IconFileText,
   IconGripVertical,
-  IconMapPinFilled,
   IconMinus,
   IconPhotoPlus,
   IconPlus,
@@ -560,123 +558,7 @@ export function FileUpload({
 // Location
 // ---------------------------------------------------------------------------
 
-/**
- * Map placeholder with a draggable pin. Swap the canvas for Leaflet/OSM when
- * wiring real data; the lat/lng contract stays the same.
- */
-export function LocationPicker({
-  lat: initialLat = -7.9467,
-  lng: initialLng = 112.6159,
-  onChange,
-}: {
-  lat?: number
-  lng?: number
-  /** Emits the pin position (rounded to 6 decimals). */
-  onChange?: (pos: { lat: number; lng: number }) => void
-}) {
-  const [pos, setPos] = React.useState({ x: 0.5, y: 0.5 })
-  const [center, setCenter] = React.useState({ lat: initialLat, lng: initialLng })
-  const [locating, setLocating] = React.useState(false)
-  const boxRef = React.useRef<HTMLDivElement>(null)
-  const dragging = React.useRef(false)
-
-  const SPAN = 0.02
-  const lat = center.lat + (0.5 - pos.y) * SPAN
-  const lng = center.lng + (pos.x - 0.5) * SPAN
-
-  const onChangeRef = React.useRef(onChange)
-  React.useEffect(() => {
-    onChangeRef.current = onChange
-  })
-  React.useEffect(() => {
-    onChangeRef.current?.({ lat: Math.round(lat * 1e6) / 1e6, lng: Math.round(lng * 1e6) / 1e6 })
-  }, [lat, lng])
-
-  const moveTo = (clientX: number, clientY: number) => {
-    const r = boxRef.current?.getBoundingClientRect()
-    if (!r) return
-    setPos({
-      x: Math.min(0.97, Math.max(0.03, (clientX - r.left) / r.width)),
-      y: Math.min(0.95, Math.max(0.08, (clientY - r.top) / r.height)),
-    })
-  }
-
-  const useMyLocation = () => {
-    if (!("geolocation" in navigator)) {
-      toast.add({ title: "Perangkat tidak mendukung lokasi.", type: "error" })
-      return
-    }
-    setLocating(true)
-    navigator.geolocation.getCurrentPosition(
-      (p) => {
-        setCenter({ lat: p.coords.latitude, lng: p.coords.longitude })
-        setPos({ x: 0.5, y: 0.5 })
-        setLocating(false)
-      },
-      () => {
-        setLocating(false)
-        toast.add({ title: "Izin lokasi ditolak. Geser pin secara manual.", type: "error" })
-      },
-      { enableHighAccuracy: true, timeout: 10_000 }
-    )
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      <div
-        ref={boxRef}
-        className="relative h-56 touch-none overflow-hidden bg-[#e8ece9] select-none dark:bg-[#1f2624]"
-        onPointerDown={(e) => {
-          dragging.current = true
-          ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
-          moveTo(e.clientX, e.clientY)
-        }}
-        onPointerMove={(e) => dragging.current && moveTo(e.clientX, e.clientY)}
-        onPointerUp={() => (dragging.current = false)}
-        role="application"
-        aria-label="Peta lokasi. Seret pin ke posisi yang tepat."
-      >
-        <svg className="absolute inset-0 size-full" aria-hidden preserveAspectRatio="none" viewBox="0 0 400 220">
-          <g className="stroke-background" strokeWidth="10" fill="none">
-            <path d="M-10 70 L410 50" />
-            <path d="M-10 170 C120 160 260 190 410 150" />
-            <path d="M120 -10 L140 230" />
-            <path d="M290 -10 C280 80 300 140 270 230" />
-          </g>
-          <g className="stroke-background/70" strokeWidth="4" fill="none">
-            <path d="M-10 120 L410 115" />
-            <path d="M60 -10 L50 230" />
-            <path d="M210 -10 L220 230" />
-            <path d="M340 -10 L360 230" />
-          </g>
-          <rect x="150" y="80" width="50" height="25" className="fill-success/15" />
-          <rect x="300" y="160" width="70" height="40" className="fill-primary/10" />
-        </svg>
-        <div
-          className="pointer-events-none absolute -translate-x-1/2 -translate-y-full text-primary drop-shadow-md"
-          style={{ left: `${pos.x * 100}%`, top: `${pos.y * 100}%` }}
-        >
-          <IconMapPinFilled className="size-9" />
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          className="absolute right-3 bottom-3 bg-background"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={useMyLocation}
-          disabled={locating}
-        >
-          <IconCurrentLocation data-icon="inline-start" />
-          {locating ? "Mencari…" : "Gunakan lokasi saya"}
-        </Button>
-      </div>
-      <p className="font-mono text-xs text-muted-foreground tabular-nums">
-        {lat.toFixed(5)}, {lng.toFixed(5)}
-      </p>
-    </div>
-  )
-}
+export { LocationPicker } from "@/components/app/map"
 
 // ---------------------------------------------------------------------------
 // Operating hours

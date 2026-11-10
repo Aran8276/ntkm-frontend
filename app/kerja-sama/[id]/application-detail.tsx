@@ -32,6 +32,7 @@ import {
 import { toast } from "@/components/ui/toast"
 import { AppShell } from "@/components/app/app-shell"
 import { ConfirmDialog, InfoRow, PageSkeletonBody, Section, Thumb } from "@/components/app/blocks"
+import { LocationMap } from "@/components/app/map"
 import { LoadError, handleApiError, showConflict } from "@/components/app/feedback"
 import { useRole } from "@/components/app/providers"
 import { StockControl } from "@/components/app/cards"
@@ -279,6 +280,9 @@ function DetailView({
                   <p className="text-sm text-muted-foreground">{app.store.address}</p>
                 </div>
               </div>
+            )}
+            {viewer === "umkm" && Number.isFinite(app.store.lat) && Number.isFinite(app.store.lng) && (
+              <LocationMap lat={app.store.lat} lng={app.store.lng} label={app.store.name} className="mt-4" />
             )}
           </Section>
 

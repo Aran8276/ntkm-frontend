@@ -28,6 +28,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 import { AppShell } from "@/components/app/app-shell"
 import { InfoRow, PageSkeletonBody, Section, Thumb } from "@/components/app/blocks"
+import { LocationMap } from "@/components/app/map"
 import { LoadError, handleApiError } from "@/components/app/feedback"
 import { FormField } from "@/components/app/form-field"
 import { CharCount, CommissionCalculator } from "@/components/app/inputs"
@@ -162,6 +163,9 @@ function ApplyView({ o, reload }: { o: FeedOpportunityDetail; reload: () => Prom
               )}
             </div>
           </div>
+          {Number.isFinite(o.store.lat) && Number.isFinite(o.store.lng) && (
+            <LocationMap lat={o.store.lat} lng={o.store.lng} label={o.store.name} />
+          )}
           <Collapsible className="border-t pt-2">
             <CollapsibleTrigger className="group flex w-full items-center justify-between py-2 text-[0.6875rem] font-semibold tracking-widest uppercase outline-none focus-visible:underline">
               Jam operasional

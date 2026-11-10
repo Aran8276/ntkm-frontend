@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { IconArrowRight, IconMapPin } from "@tabler/icons-react"
+import { IconArrowRight } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
 import { DAYS, DAY_LABEL, formatDate, formatTimeRange } from "@/lib/format"
@@ -11,6 +11,7 @@ import type { AdminApplicationRow, AuditLog } from "@/lib/admin-types"
 import type { OperatingHour } from "@/lib/types"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ApplicationStatusChip } from "@/components/app/status"
+import { LocationMap } from "@/components/app/map"
 import { AUDIT_ACTION_LABEL, DateTime, Dash, OverrideMark, TARGET_LABEL } from "@/components/admin/admin-ui"
 
 /** Clickable compact table used inside detail pages. */
@@ -145,23 +146,9 @@ export function AuditMiniTable({ rows, empty = "Belum ada tindakan admin." }: { 
   )
 }
 
-/** Read-only map placeholder (Leaflet in production). */
+/** Read-only Leaflet map of a profile's location. */
 export function StaticMap({ lat, lng, className }: { lat: number; lng: number; className?: string }) {
-  return (
-    <div
-      className={cn(
-        "relative flex aspect-[16/7] items-center justify-center overflow-hidden bg-muted bg-[linear-gradient(var(--border)_1px,transparent_1px),linear-gradient(90deg,var(--border)_1px,transparent_1px)] bg-[size:28px_28px]",
-        className
-      )}
-    >
-      <span className="absolute top-[38%] left-0 h-3 w-full -rotate-6 bg-background/90" />
-      <span className="absolute top-0 left-[58%] h-full w-2.5 rotate-12 bg-background/90" />
-      <IconMapPin className="relative z-10 size-8 -translate-y-3 fill-primary/20 text-primary" />
-      <span className="absolute right-2 bottom-2 bg-background/90 px-2 py-1 font-mono text-[0.625rem] text-muted-foreground">
-        {lat.toFixed(4)}, {lng.toFixed(4)}
-      </span>
-    </div>
-  )
+  return <LocationMap lat={lat} lng={lng} directions={false} className={className} />
 }
 
 export function OperatingHoursTable({ hours }: { hours: OperatingHour[] }) {

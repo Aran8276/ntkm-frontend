@@ -427,9 +427,9 @@ function StoreProfileFormInner({ mode, profile }: { mode: Mode; profile?: StoreP
               <FormField
                 label="Titik lokasi"
                 required
-                description="Geser pin tepat ke depan toko. Lokasi ini dipakai UMKM untuk menghitung jarak."
+                description="Cari alamat toko, lalu geser pin tepat ke depan toko. Lokasi ini dipakai UMKM untuk menghitung jarak dan menemukan toko Anda."
               >
-                <LocationPicker lat={p?.lat} lng={p?.lng} onChange={setLoc} />
+                <LocationPicker lat={p?.lat} lng={p?.lng} onChange={setLoc} onAddress={setAddress} />
               </FormField>
             </>
           ),
@@ -566,8 +566,8 @@ function UmkmProfileFormInner({ mode, profile }: { mode: Mode; profile?: UmkmPro
                 onChange={setAddress}
                 placeholder="Jl. Sanan Gg. 3 No. 17, Purwantoro"
               />
-              <FormField label="Titik lokasi" required description="Dipakai untuk mencari toko terdekat dari tempat Anda.">
-                <LocationPicker lat={p?.lat ?? -7.9612} lng={p?.lng ?? 112.6475} onChange={setLoc} />
+              <FormField label="Titik lokasi" required description="Cari alamat produksi, lalu geser pin ke posisi yang tepat. Dipakai untuk mencari toko terdekat dari tempat Anda.">
+                <LocationPicker lat={p?.lat} lng={p?.lng} onChange={setLoc} onAddress={setAddress} />
               </FormField>
             </>
           ),

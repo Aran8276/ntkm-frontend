@@ -299,7 +299,7 @@ function ProfileAdminForm(props: Props) {
               </FormField>
             </div>
             <FormField label="Titik lokasi" required description="Geser pin ke lokasi yang tepat.">
-              <LocationPicker lat={props.profile?.lat} lng={props.profile?.lng} onChange={setLoc} />
+              <LocationPicker lat={props.profile?.lat} lng={props.profile?.lng} onChange={setLoc} onAddress={touch(setAddress)} />
             </FormField>
           </div>
         </FormSectionCard>
