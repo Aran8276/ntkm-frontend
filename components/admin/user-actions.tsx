@@ -271,7 +271,7 @@ export function UserFormModal({
           <DialogHeader>
             <DialogTitle>{edit ? "Ubah pengguna" : "Undang pengguna"}</DialogTitle>
             <DialogDescription>
-              {edit ? "Hanya field yang berubah yang dikirim." : "Pengguna masuk dengan akun Google yang memakai email ini."}
+              {edit ? "Hanya field yang berubah yang dikirim." : "Pengguna membuat kata sandinya lewat “Lupa kata sandi” di halaman masuk dengan email ini."}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -288,7 +288,7 @@ export function UserFormModal({
               htmlFor="u-email"
               required={!edit}
               error={errors.email}
-              description={edit ? "Email tidak bisa diubah karena dipakai untuk masuk dengan Google." : undefined}
+              description={edit ? "Email tidak bisa diubah karena dipakai untuk masuk." : undefined}
             >
               <Input
                 id="u-email"

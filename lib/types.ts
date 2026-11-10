@@ -80,6 +80,8 @@ export interface Me {
   is_admin: boolean
   admin_role: "superadmin" | "staff" | null
   unread_notifications: number
+  /** False for accounts that never set a password (invited or Google-only). */
+  has_password?: boolean
 }
 
 export interface Store {

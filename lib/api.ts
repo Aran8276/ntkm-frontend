@@ -270,6 +270,13 @@ async function rawFetch(scope: Scope, path: string, opts: RequestOptions, retry 
   }
 
   if (res.status === 401 && !opts.anonymous) {
+    // A wrong current password (`POST /me/password`) is not an expired session.
+    const code = await res
+      .clone()
+      .json()
+      .then((b: { error?: { code?: string } } | null) => b?.error?.code)
+      .catch(() => undefined)
+    if (code === "invalid_credentials") return res
     if (retry && tokens?.refresh && (await refreshTokens(scope))) return rawFetch(scope, path, opts, false)
     endSession(scope, "expired")
   }

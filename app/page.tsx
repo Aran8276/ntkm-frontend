@@ -1,12 +1,10 @@
 import {
   IconAdjustmentsCheck,
   IconBellRinging,
-  IconBrandInstagram,
   IconBrandWhatsapp,
   IconCalendarTime,
   IconChecks,
   IconChevronRight,
-  IconMail,
   IconMapPin,
   IconRosetteDiscountCheck,
   IconTimeline,
@@ -22,20 +20,14 @@ import {
 } from "@/components/landing/landing-client";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { title } from "process";
-
-const PILOT_CITY = "Malang";
-const PILOT_STORES = ["Toko Sumber Rejeki", "Minimarket Berkah Jaya"];
-
-/** Pilot testimonials stay hidden until real quotes are available. */
-const TESTIMONIALS: { quote: string; name: string; business: string }[] = [];
+import { WHATSAPP_NUMBER, WHATSAPP_URL } from "@/lib/contact";
 
 function CtaButtons({ placement }: { placement: string }) {
   return (
     <>
       <div className="md:flex flex-col hidden gap-3 sm:flex-row">
         <Link
-          href="/masuk?role=store"
+          href="/daftar?role=store"
           data-cta={`${placement}-store`}
           className={cn(
             buttonVariants({ size: "lg" }),
@@ -46,7 +38,7 @@ function CtaButtons({ placement }: { placement: string }) {
           <IconChevronRight />
         </Link>
         <Link
-          href="/masuk?role=umkm"
+          href="/daftar?role=umkm"
           data-cta={`${placement}-umkm`}
           className={cn(
             buttonVariants({ size: "lg", variant: "outline" }),
@@ -58,8 +50,8 @@ function CtaButtons({ placement }: { placement: string }) {
       </div>
       <div className="flex flex-col md:hidden gap-3 sm:flex-row">
         <Link
-          href="/masuk?role=store"
-          data-cta={`${placement}-store`}
+          href="/daftar?role=umkm"
+          data-cta={`${placement}-umkm`}
           className={cn(
             buttonVariants({ size: "lg" }),
             "w-full sm:w-auto flex items-center px-6",
@@ -69,8 +61,8 @@ function CtaButtons({ placement }: { placement: string }) {
           <IconChevronRight />
         </Link>
         <Link
-          href="/masuk?role=umkm"
-          data-cta={`${placement}-umkm`}
+          href="/daftar?role=store"
+          data-cta={`${placement}-store`}
           className={cn(
             buttonVariants({ size: "lg", variant: "outline" }),
             "w-full bg-background sm:w-auto",
@@ -285,33 +277,10 @@ export default function LandingPage() {
               </p>
               <CtaButtons placement="hero" />
               <p className="text-sm text-muted-foreground">
-                Gratis. Cukup masuk dengan akun Google.
+                Gratis. Cukup daftar dengan email.
               </p>
             </div>
             <PhoneMockup />
-          </div>
-        </section>
-
-        {/* Proof strip */}
-        <section className="border-b">
-          <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 py-6 text-center sm:flex-row sm:text-left lg:px-8">
-            <p className="text-sm text-muted-foreground">
-              Sedang diuji bersama{" "}
-              <span className="font-medium text-foreground">
-                2 toko ritel dan 5 UMKM
-              </span>{" "}
-              di {PILOT_CITY}
-            </p>
-            <div className="flex flex-wrap justify-center gap-6">
-              {PILOT_STORES.map((s) => (
-                <span
-                  key={s}
-                  className="text-xs font-semibold tracking-widest text-foreground/60 uppercase"
-                >
-                  {s}
-                </span>
-              ))}
-            </div>
           </div>
         </section>
 
@@ -421,34 +390,6 @@ export default function LandingPage() {
           </div>
         </section>
 
-        {/* Testimonials (hidden until quotes are available) */}
-        {TESTIMONIALS.length > 0 && (
-          <section className="mx-auto w-full max-w-6xl px-4 py-20 lg:px-8">
-            <SectionTitle
-              eyebrow="Kata peserta pilot"
-              title="Dari mereka yang sudah mencoba"
-            />
-            <div className="mt-12 grid gap-6 md:grid-cols-3">
-              {TESTIMONIALS.map((t) => (
-                <figure
-                  key={t.name}
-                  className="flex flex-col gap-6 bg-muted/60 p-8"
-                >
-                  <blockquote className="text-base leading-relaxed">
-                    “{t.quote}”
-                  </blockquote>
-                  <figcaption className="text-sm">
-                    <span className="font-medium">{t.name}</span>
-                    <span className="block text-muted-foreground">
-                      {t.business}
-                    </span>
-                  </figcaption>
-                </figure>
-              ))}
-            </div>
-          </section>
-        )}
-
         {/* FAQ */}
         <section
           id="faq"
@@ -466,12 +407,12 @@ export default function LandingPage() {
                 Siap mulai?
               </h2>
               <p className="text-background/70">
-                Gratis selama masa pilot. Cukup masuk dengan akun Google.
+                Gratis selama masa pilot. Cukup daftar dengan email.
               </p>
             </div>
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
               <Link
-                href="/masuk?role=store"
+                href="/daftar?role=store"
                 data-cta="closing-store"
                 className={cn(
                   buttonVariants({ size: "lg" }),
@@ -481,7 +422,7 @@ export default function LandingPage() {
                 Saya pemilik toko
               </Link>
               <Link
-                href="/masuk?role=umkm"
+                href="/daftar?role=umkm"
                 data-cta="closing-umkm"
                 className={cn(
                   buttonVariants({ size: "lg", variant: "outline" }),
@@ -496,7 +437,7 @@ export default function LandingPage() {
       </main>
 
       <footer className="border-t">
-        <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:grid-cols-2 lg:grid-cols-4 lg:px-8">
+        <div className="mx-auto grid max-w-6xl gap-10 px-4 py-14 sm:grid-cols-2 lg:grid-cols-[2fr_1fr_1fr] lg:px-8">
           <div className="flex flex-col gap-4">
             <Logo />
             <p className="text-sm font-medium">{APP_SLOGAN}.</p>
@@ -505,24 +446,13 @@ export default function LandingPage() {
             </p>
           </div>
           <FooterCol title="Kontak">
-            <FooterLink
-              href="https://wa.me/6281200000000"
-              icon={IconBrandWhatsapp}
-            >
-              WhatsApp admin
-            </FooterLink>
-            <FooterLink href="mailto:halo@ntkm.id" icon={IconMail}>
-              halo@ntkm.id
+            <FooterLink href={WHATSAPP_URL} icon={IconBrandWhatsapp}>
+              WhatsApp {WHATSAPP_NUMBER}
             </FooterLink>
           </FooterCol>
           <FooterCol title="Legal">
             <FooterLink href="/kebijakan-privasi">Kebijakan Privasi</FooterLink>
             <FooterLink href="/syarat-ketentuan">Syarat & Ketentuan</FooterLink>
-          </FooterCol>
-          <FooterCol title="Media sosial">
-            <FooterLink href="https://instagram.com" icon={IconBrandInstagram}>
-              Instagram
-            </FooterLink>
           </FooterCol>
         </div>
         <div className="border-t">
@@ -564,6 +494,7 @@ function FooterLink({
   return (
     <a
       href={href}
+      {...(href.startsWith("http") ? { target: "_blank", rel: "noopener noreferrer" } : {})}
       className="inline-flex items-center gap-2 text-sm hover:underline"
     >
       {Ico && <Ico className="size-4" stroke={1.75} />}

@@ -23,6 +23,8 @@ import { Button, buttonVariants } from "@/components/ui/button"
 import { AppShell } from "@/components/app/app-shell"
 import { ConfirmDialog, Section, Thumb } from "@/components/app/blocks"
 import { LegalChips } from "@/components/app/status"
+import { WHATSAPP_URL } from "@/lib/contact"
+import { PasswordSection } from "./password-section"
 
 const APP_VERSION = "0.1.0"
 
@@ -45,7 +47,7 @@ export function ProfileOverview() {
       <Section>
         <div className="flex items-center gap-5">
           {ME.avatar ? (
-            // eslint-disable-next-line @next/next/no-img-element -- Google avatar URL
+            // eslint-disable-next-line @next/next/no-img-element -- external avatar URL
             <img src={ME.avatar} alt="" className="size-16 shrink-0 rounded-full object-cover" />
           ) : (
             <span className="flex size-16 shrink-0 items-center justify-center rounded-full bg-muted text-lg font-semibold">
@@ -55,7 +57,6 @@ export function ProfileOverview() {
           <div className="flex min-w-0 flex-col gap-1">
             <p className="text-lg font-medium">{ME.name}</p>
             <p className="truncate text-sm text-muted-foreground">{ME.email}</p>
-            <p className="text-xs text-muted-foreground">Data akun mengikuti akun Google Anda.</p>
           </div>
         </div>
       </Section>
@@ -142,6 +143,8 @@ export function ProfileOverview() {
         )}
       </div>
 
+      <PasswordSection />
+
       <Section title="Notifikasi email">
         <p className="flex items-center gap-3 text-sm">
           <IconMail className="size-4.5 text-muted-foreground" stroke={1.75} />
@@ -151,7 +154,7 @@ export function ProfileOverview() {
 
       <Section title="Bantuan" contentClassName="-my-2">
         <nav className="flex flex-col">
-          <HelpLink href="https://wa.me/6281200000000" icon={IconBrandWhatsapp}>
+          <HelpLink href={WHATSAPP_URL} icon={IconBrandWhatsapp}>
             Hubungi admin lewat WhatsApp
           </HelpLink>
           <HelpLink href="/#faq" icon={IconBook}>
@@ -177,7 +180,7 @@ export function ProfileOverview() {
         open={logout}
         onOpenChange={setLogout}
         title="Keluar dari akun ini?"
-        description="Anda perlu masuk lagi dengan Google untuk memakai aplikasi."
+        description="Anda perlu masuk lagi untuk memakai aplikasi."
         confirmLabel="Ya, keluar"
         destructive
         onConfirm={() => void signOut().then(() => router.push("/"))}

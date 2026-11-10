@@ -162,7 +162,7 @@ const FAQ = [
     q: "Bagaimana kalau produk tidak laku atau mendekati kedaluwarsa?",
     a: "Ketentuan untuk produk yang tidak laku atau mendekati kedaluwarsa sedang difinalkan bersama peserta pilot. Untuk saat ini, toko dan UMKM dapat menyelesaikan kerja sama kapan saja dari aplikasi.",
   },
-  { q: "Bisa jadi toko dan UMKM sekaligus?", a: "Ya. Satu akun Google bisa memiliki dua peran dan berpindah mode kapan saja." },
+  { q: "Bisa jadi toko dan UMKM sekaligus?", a: "Ya. Satu akun bisa memiliki dua peran dan berpindah mode kapan saja." },
   {
     q: "Perlu install aplikasi?",
     a: "Tidak. Buka di browser HP, lalu pilih \"Tambahkan ke layar utama\" agar terasa seperti aplikasi.",

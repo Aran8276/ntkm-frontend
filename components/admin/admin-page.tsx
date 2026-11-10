@@ -129,7 +129,7 @@ function TopBar({ crumbs }: { crumbs: Crumb[] }) {
         open={logout}
         onOpenChange={setLogout}
         title="Keluar dari panel admin?"
-        description="Anda perlu masuk lagi dengan Google untuk membuka panel ini."
+        description="Anda perlu masuk lagi untuk membuka panel ini."
         confirmLabel="Keluar"
         onConfirm={() => void signOut().then(() => router.push("/admin/masuk"))}
       />
